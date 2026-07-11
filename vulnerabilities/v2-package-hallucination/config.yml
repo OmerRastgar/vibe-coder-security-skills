@@ -1,0 +1,133 @@
+# AI Package Hallucination audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+# A "hallucinated" package is one that an LLM invented (does not truly exist) or
+# is a typosquat of a real package. The scanner flags suspicious packages for the
+# human to verify against the live registry.
+
+# Directories / globs to skip
+exclude_patterns:
+  - node_modules
+  - .git/objects
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - site-packages
+
+# Dependency manifest files to parse (format: "relative-path|ecosystem")
+manifests:
+  - "package.json|npm"
+  - "package-lock.json|npm"
+  - "yarn.lock|npm"
+  - "pnpm-lock.yaml|npm"
+  - "requirements.txt|pypi"
+  - "pyproject.toml|pypi"
+  - "Pipfile|pypi"
+  - "poetry.lock|pypi"
+  - "go.mod|go"
+  - "Cargo.toml|cargo"
+  - "Gemfile|rubygems"
+  - "Dockerfile|docker"
+  - "*.yml|ci"
+  - "*.yaml|ci"
+
+# Source files to scan for import / require statements (per ecosystem)
+source_files:
+  npm: ["*.js", "*.jsx", "*.ts", "*.tsx", "*.mjs", "*.cjs"]
+  pypi: ["*.py"]
+  go: ["*.go"]
+  cargo: ["*.rs"]
+  rubygems: ["*.rb"]
+
+# Known-real popular packages per ecosystem (used for typosquat comparison).
+# A declared package that is off-by-a-char / dash-vs-underscore from one of these
+# is flagged as a likely typosquat.
+known_packages:
+  npm:
+    - react
+    - react-dom
+    - lodash
+    - axios
+    - express
+    - webpack
+    - moment
+    - chalk
+    - commander
+    - dotenv
+    - jest
+    - typescript
+    - vue
+    - angular
+    - next
+    - tailwindcss
+    - prisma
+    - mongoose
+    - socket.io
+    - redux
+  pypi:
+    - requests
+    - boto3
+    - numpy
+    - pandas
+    - flask
+    - django
+    - urllib3
+    - pillow
+    - cryptography
+    - pyyaml
+    - click
+    - fastapi
+    - pydantic
+    - sqlalchemy
+    - matplotlib
+    - scipy
+  go:
+    - gin
+    - gorilla/mux
+    - cobra
+    - viper
+    - golang.org/x/sys
+  cargo:
+    - serde
+    - tokio
+    - rand
+    - clap
+    - regex
+  rubygems:
+    - rails
+    - devise
+    - puma
+    - nokogiri
+    - rspec
+
+# Heuristics: names that look like AI-generated hallucinations
+# (highly generic / descriptive names with no real maintainer).
+# These are checked case-insensitively against declared package names.
+ai_hallucination_patterns:
+  - "string-utils"
+  - "array-utils"
+  - "object-utils"
+  - "date-utils"
+  - "simple-auth"
+  - "easy-auth"
+  - "react-native-simple"
+  - "react-native-simple-auth-handler"
+  - "node-helper"
+  - "python-helper"
+  - "python-string-utils"
+  - "data-validator"
+  - "data-validator"
+  - "http-client"
+  - "api-client"
+  - "logger-utils"
+  - "config-manager"
+  - "file-helper"
+  - "crypto-helper"
+
+# Edit-distance threshold for typosquat detection (Levenshtein <= this vs a known pkg)
+typosquat_max_distance: 2
+
+# Mask nothing here (package names are not secrets), but keep schema consistent.
+mask_secret: false
