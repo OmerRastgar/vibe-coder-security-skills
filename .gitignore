@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor / OS
+.DS_Store
+Thumbs.db
+*.swp
+
+# Local settings
+.commandcode/settings.local.json
+
+# Debug / temp outputs
+dbg*.txt
+err.txt
+out.txt
+v2out.json
+_dbg_*.ps1
+_dbg_*.py
