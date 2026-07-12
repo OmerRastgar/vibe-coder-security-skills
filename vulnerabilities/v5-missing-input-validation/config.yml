@@ -1,0 +1,126 @@
+# Missing Input Validation audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+  - test
+  - tests
+  - __tests__
+  - spec
+
+# File extensions to scan (backend source)
+source_extensions:
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".py"
+  - ".go"
+  - ".java"
+  - ".cs"
+  - ".rb"
+  - ".php"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : JSON Body | File Upload | URL Params | Forms & Headers
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- JSON Body ----------------------------------------------------
+
+  - name: "Mass Assignment via req.body Spread"
+    regex: '\.\.\.\s*req\.body|\.\.\.\s*request\.body|Object\.assign\s*\(\s*\w+\s*,\s*req\.body'
+    category: "JSON Body"
+    severity: "high"
+    note: "req.body spread directly into an object/model. Use an explicit allow-list of permitted fields."
+
+  - name: "Mass Assignment via Python dict unpack"
+    regex: '\*\*\s*request\.(?:json|data|form)\s*\(\s*\)|\*\*\s*data\b.*update\s*\(|\*\*\s*payload\b'
+    category: "JSON Body"
+    severity: "high"
+    note: "Dict unpacked into model or ORM call. Use an explicit field allow-list or a validated Pydantic/serializer schema."
+
+  - name: "No Schema Validation on Route Handler"
+    regex: 'router\.(post|put|patch)\s*\(|app\.(post|put|patch)\s*\(|@app\.route.*methods=\[.POST'
+    category: "JSON Body"
+    severity: "medium"
+    note: "Route handler found — verify a validation schema (Zod, Joi, Pydantic, class-validator) is applied before processing req.body."
+
+  - name: "Raw typeof / Presence Check Only"
+    regex: 'if\s*\(\s*(?:typeof\s+\w+\s*===\s*[''"]string[''"]\s*\))|if\s*\(\s*req\.body\.\w+\s*\)'
+    category: "JSON Body"
+    severity: "medium"
+    note: "Shallow presence/typeof check only. Validate type, length, structure, and allowed values."
+
+  # ---- File Upload --------------------------------------------------
+
+  - name: "File Extension Check Without Magic Bytes"
+    regex: '\.mimetype\s*===|\.originalname\..*endsWith|path\.extname\s*\(|filename\.split\s*\(\s*[''"]\.[''"]\s*\)'
+    category: "File Upload"
+    severity: "high"
+    note: "File type checked via extension or mimetype string only. Add server-side magic-byte validation (file-type, python-magic)."
+
+  - name: "No File Size Limit on Multer / Busboy"
+    regex: 'multer\s*\(\s*\{(?![^}]*limits)|busboy\s*\(\s*\{(?![^}]*fileSize)|upload\s*=\s*multer\s*\(\s*\)'
+    category: "File Upload"
+    severity: "high"
+    note: "Multer/busboy configured without a fileSize limit. An attacker can upload arbitrarily large files (DoS)."
+
+  - name: "Upload Path Derived from User Input"
+    regex: 'path\.join\s*\(.*req\.|__dirname.*req\.|uploadDir.*req\.|dest.*req\.body|filename.*req\.query'
+    category: "File Upload"
+    severity: "high"
+    note: "Upload destination path includes user-controlled input. Sanitise filenames and use a fixed upload directory."
+
+  # ---- URL Params & Queries -----------------------------------------
+
+  - name: "Pagination Param Without Bounds Check"
+    regex: 'req\.query\.(?:limit|offset|page|size|per_page)|request\.args\.get\s*\(\s*[''"](?:limit|offset|page|size)[''"]\s*\)'
+    category: "URL Params"
+    severity: "high"
+    note: "Pagination param read from query string — verify parseInt + max-value cap before passing to DB (e.g., limit = Math.min(parseInt(limit), 100))."
+
+  - name: "Raw Query Param Fed to DB / ORM"
+    regex: 'req\.query\.\w+.*(?:find|query|where|select|exec)|request\.args\.get.*(?:filter|query|search|sort)'
+    category: "URL Params"
+    severity: "high"
+    note: "URL query param flows directly to a DB call. Cast to the expected type and validate the allowed value set."
+
+  - name: "Path Param Without Type Validation"
+    regex: 'req\.params\.\w+|request\.path_params\.\w+'
+    category: "URL Params"
+    severity: "medium"
+    note: "Path param used — verify it is cast to the expected type (parseInt, UUID regex) before DB lookup."
+
+  # ---- Forms & Headers ----------------------------------------------
+
+  - name: "Webhook Without HMAC Verification"
+    regex: 'router\.(post|get)\s*\(\s*[''"].*webhook|app\.(post|get)\s*\(\s*[''"].*webhook|@.*webhook.*route'
+    category: "Forms & Headers"
+    severity: "high"
+    note: "Webhook endpoint found — verify the request signature is checked with crypto.timingSafeEqual or equivalent before processing."
+
+  - name: "Missing timingSafeEqual on Signature Check"
+    regex: 'signature\s*===\s*|hmac\s*===\s*|hash\s*===\s*computed|digest\s*===\s*expected'
+    category: "Forms & Headers"
+    severity: "high"
+    note: "Signature compared with === (timing attack). Use crypto.timingSafeEqual / hmac.compare_digest instead."
+
+  - name: "Unsanitised Header Written to Log"
+    regex: 'console\.log.*req\.headers|logger\..*req\.headers\[|log\..*user.agent|print.*request\.headers'
+    category: "Forms & Headers"
+    severity: "medium"
+    note: "Raw header value written to log. Sanitise newlines to prevent log injection / log forgery."
