@@ -1,0 +1,139 @@
+# Disabled Data Isolation audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+
+# File extensions to scan
+source_extensions:
+  - ".sql"
+  - ".py"
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".go"
+  - ".rb"
+  - ".java"
+  - ".cs"
+  - ".json"
+  - ".yaml"
+  - ".yml"
+  - ".tf"
+  - ".hcl"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : RDBMS | NoSQL | Vector & Graph | BaaS & Cloud
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- RDBMS --------------------------------------------------------
+
+  - name: "RLS Defined But Never Enabled"
+    regex: 'CREATE\s+POLICY\s+\w+'
+    category: "RDBMS"
+    severity: "high"
+    note: "CREATE POLICY found — verify a matching 'ALTER TABLE ... ENABLE ROW LEVEL SECURITY' exists for this table."
+
+  - name: "Missing ENABLE ROW LEVEL SECURITY"
+    regex: 'ALTER\s+TABLE\s+\w+\s+DISABLE\s+ROW\s+LEVEL\s+SECURITY'
+    category: "RDBMS"
+    severity: "high"
+    note: "RLS explicitly disabled on a table. All policies on this table are bypassed."
+
+  - name: "Wildcard RLS Policy (USING true)"
+    regex: 'USING\s*\(\s*true\s*\)|WITH\s+CHECK\s*\(\s*true\s*\)'
+    category: "RDBMS"
+    severity: "high"
+    note: "RLS policy allows all rows unconditionally. This is equivalent to no isolation."
+
+  - name: "Superuser / Root DB Connection"
+    regex: 'postgres://postgres:|mysql://root:|mongodb\+srv://admin:|DB_USER.*=.*root|DATABASE_URL.*:postgres@|DATABASE_URL.*:root@'
+    category: "RDBMS"
+    severity: "high"
+    note: "Admin/root credentials in connection string. Application queries should use a least-privilege role."
+
+  - name: "Raw Table Query Without Tenant Filter"
+    regex: 'SELECT\s+\*\s+FROM\s+\w+\s*;|\.findAll\s*\(\s*\)|\.find\s*\(\s*\{\s*\}\s*\)|Model\.objects\.all\s*\(\s*\)'
+    category: "RDBMS"
+    severity: "medium"
+    note: "Unfiltered table scan — no tenant_id / org_id WHERE clause visible. Verify tenant scoping is applied."
+
+  # ---- NoSQL --------------------------------------------------------
+
+  - name: "MongoDB Unfiltered find / findOne"
+    regex: '\.find\s*\(\s*\{\s*\}\s*\)|\.findOne\s*\(\s*\{\s*\}\s*\)|\.find\s*\(\s*\)\s*\.|collection\.find\s*\(\s*\)'
+    category: "NoSQL"
+    severity: "high"
+    note: "MongoDB query with empty filter — no tenantId/orgId constraint. All documents in the collection are exposed."
+
+  - name: "Redis Key Without Tenant Prefix"
+    regex: 'redis\.(get|set|del|hget|hset)\s*\(\s*[`\'"](?!.*\$\{.*tenant|.*\$\{.*org|.*tenant:|.*org:)'
+    category: "NoSQL"
+    severity: "medium"
+    note: "Redis key does not appear to include a tenant prefix. All tenants may share the same keyspace."
+
+  - name: "DynamoDB Scan Without Filter"
+    regex: 'dynamodb\.scan\s*\(|client\.scan\s*\(\s*\{[^}]*TableName[^}]*\}\s*\)'
+    category: "NoSQL"
+    severity: "high"
+    note: "DynamoDB Scan with no FilterExpression — returns all items across all tenants."
+
+  # ---- Vector & Graph -----------------------------------------------
+
+  - name: "Pinecone Query Without Namespace or Filter"
+    regex: 'index\.query\s*\(|pinecone\.query\s*\('
+    category: "Vector & Graph"
+    severity: "high"
+    note: "Pinecone query call — verify a 'namespace' param or metadata 'filter' with a tenant field is present."
+
+  - name: "Weaviate / Milvus Query Without Tenant Where"
+    regex: 'client\.query\s*\.|\.near_text\s*\(|\.near_vector\s*\(|milvus.*search\s*\('
+    category: "Vector & Graph"
+    severity: "medium"
+    note: "Vector DB search call — verify a mandatory tenant/org metadata filter is applied before executing."
+
+  - name: "Unbounded Neo4j Cypher MATCH"
+    regex: 'MATCH\s+\([a-z:]+\)\s*(?:RETURN|WHERE\s+(?!.*tenant|.*org))'
+    category: "Vector & Graph"
+    severity: "high"
+    note: "Cypher MATCH with no tenant label or property filter. Any connected node in the graph is reachable."
+
+  # ---- BaaS & Cloud -------------------------------------------------
+
+  - name: "Firebase Allow-All Rule"
+    regex: '\.read\s*:\s*true|\.write\s*:\s*true|allow\s+read\s*,\s*write\s*:\s*if\s+true|allow\s+read\s*:\s*if\s+true'
+    category: "BaaS & Cloud"
+    severity: "high"
+    note: "Firebase/Firestore wildcard rule — any authenticated (or unauthenticated) user can read/write all data."
+
+  - name: "Supabase Service Role Key Exposed"
+    regex: 'SUPABASE_SERVICE_ROLE_KEY|service_role.*supabase|supabase.*service_role'
+    category: "BaaS & Cloud"
+    severity: "high"
+    note: "Service role key bypasses all RLS policies. It must never be used client-side or in unauthenticated contexts."
+
+  - name: "AWS S3 Public Principal Wildcard"
+    regex: '"Principal"\s*:\s*"\*"|''Principal''\s*:\s*''\*'''
+    category: "BaaS & Cloud"
+    severity: "high"
+    note: "S3 bucket policy allows any principal. Scope to specific IAM roles or accounts."
+
+  - name: "Terraform Public S3 / IAM Wildcard"
+    regex: 'principal\s*=\s*"\*"|actions\s*=\s*\["\*"\]|effect\s*=\s*"Allow".*actions\s*=\s*\["\*"\]'
+    category: "BaaS & Cloud"
+    severity: "high"
+    note: "Terraform IAM policy grants all actions to all principals — overly permissive."
