@@ -1,0 +1,193 @@
+# AI Default Credentials audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+
+# File extensions to scan (infra / config / source)
+source_extensions:
+  - ".yml"
+  - ".yaml"
+  - ".json"
+  - ".toml"
+  - ".env"
+  - ".sql"
+  - ".sh"
+  - ".bash"
+  - ".tf"
+  - ".hcl"
+  - ".conf"
+  - ".cfg"
+  - ".ini"
+  - ".xml"
+  - ".py"
+  - ".js"
+  - ".ts"
+  - ".rb"
+  - ".go"
+
+# Known weak / default passwords (checked case-insensitively against extracted values)
+weak_passwords:
+  - admin
+  - admin123
+  - admin1234
+  - password
+  - password1
+  - pass
+  - root
+  - guest
+  - secret
+  - 123456
+  - 1234567890
+  - changeme
+  - change_me
+  - letmein
+  - welcome
+  - default
+  - test
+  - example
+  - qwerty
+  - abc123
+  - postgres
+  - mysql
+  - mongo
+  - redis
+
+# Database / service ports that should never be published to 0.0.0.0
+sensitive_ports:
+  - "5432"   # PostgreSQL
+  - "3306"   # MySQL / MariaDB
+  - "27017"  # MongoDB
+  - "6379"   # Redis
+  - "5672"   # RabbitMQ AMQP
+  - "15672"  # RabbitMQ management UI
+  - "9200"   # Elasticsearch
+  - "2181"   # ZooKeeper
+  - "2379"   # etcd
+
+# Known base64-encoded weak passwords (Kubernetes secret values)
+weak_b64:
+  - "YWRtaW4="        # admin
+  - "cGFzc3dvcmQ="    # password
+  - "cm9vdA=="        # root
+  - "Z3Vlc3Q="        # guest
+  - "c2VjcmV0"        # secret
+  - "MTIzNDU2"        # 123456
+  - "Y2hhbmdlbWU="   # changeme
+
+# -----------------------------------------------------------------------
+# Regex patterns
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : DB Init | Admin Dashboard | Server Tooling | Broker & IdP
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- DB Init / Docker Compose -------------------------------------
+
+  - name: "Weak Postgres Password in Compose"
+    regex: 'POSTGRES_PASSWORD\s*[:=]\s*[''"]?(?:admin|password|root|postgres|secret|changeme|123456|admin123)[''"]?'
+    category: "DB Init"
+    severity: "high"
+    note: "Weak default Postgres password. Inject a strong secret via Docker secrets or a secrets manager."
+
+  - name: "Weak MySQL Root Password"
+    regex: 'MYSQL_ROOT_PASSWORD\s*[:=]\s*[''"]?(?:admin|password|root|mysql|secret|changeme|123456)[''"]?'
+    category: "DB Init"
+    severity: "high"
+    note: "Weak MySQL root password. Use a strong randomly-generated secret injected at runtime."
+
+  - name: "Weak MongoDB Init Password"
+    regex: 'MONGO_INITDB_ROOT_PASSWORD\s*[:=]\s*[''"]?(?:admin|password|root|mongo|secret|changeme|123456)[''"]?'
+    category: "DB Init"
+    severity: "high"
+    note: "Weak MongoDB root password in init config. Inject a strong secret at runtime."
+
+  - name: "Exposed Database Port"
+    regex: '[''"]?(?:5432|3306|27017|6379|5672|15672|9200|2181|2379):[''"]?(?:5432|3306|27017|6379|5672|15672|9200|2181|2379)'
+    category: "DB Init"
+    severity: "high"
+    note: "Database port published directly — accessible from outside the container network. Bind to 127.0.0.1 or use an internal network."
+
+  - name: "Generic Weak Password in Env Block"
+    regex: '(?:PASSWORD|PASSWD|PWD|SECRET)\s*[:=]\s*[''"]?(?:admin|password|root|guest|secret|changeme|123456|test|default|example|letmein)[''"]?'
+    category: "DB Init"
+    severity: "high"
+    note: "Common default/weak password in environment block. Replace with a strong runtime secret."
+
+  # ---- Admin Dashboard ----------------------------------------------
+
+  - name: "Grafana Default Admin Password"
+    regex: 'GF_SECURITY_ADMIN_PASSWORD\s*[:=]\s*[''"]?(?:admin|password|grafana|secret|changeme)[''"]?'
+    category: "Admin Dashboard"
+    severity: "high"
+    note: "Grafana admin password is a known default. Set a strong password and enforce rotation."
+
+  - name: "pgAdmin Default Password"
+    regex: 'PGADMIN_DEFAULT_PASSWORD\s*[:=]\s*[''"]?(?:admin|password|pgadmin|secret|changeme|123456)[''"]?'
+    category: "Admin Dashboard"
+    severity: "high"
+    note: "pgAdmin default password is weak. Use a strong secret injected at runtime."
+
+  - name: "Seed Account Without Force Password Change"
+    regex: 'admin@(?:example|test|localhost|domain)\.\w+|INSERT\s+INTO\s+\w*users?\w*.*admin.*password|createUser.*admin.*password'
+    category: "Admin Dashboard"
+    severity: "high"
+    note: "Admin seed account found. Verify a force_password_change / must_reset flag is enforced on first login."
+
+  # ---- Server Tooling -----------------------------------------------
+
+  - name: "SSH Password Authentication Enabled"
+    regex: 'PasswordAuthentication\s+yes'
+    category: "Server Tooling"
+    severity: "high"
+    note: "SSH password authentication enabled. Disable in sshd_config and use key-based authentication only."
+
+  - name: "Hardcoded System User Credential in Shell"
+    regex: 'echo\s+[''"]?\w+:[^''"\s]+[''"]?\s*\|\s*chpasswd|useradd\s+.*-p\s+[''"]?\S+[''"]?|usermod\s+.*-p\s+[''"]?\S+'
+    category: "Server Tooling"
+    severity: "high"
+    note: "System user password set inline in a shell script. Use a secrets manager or provisioning vault."
+
+  - name: "Ansible / Terraform Weak Password Variable"
+    regex: 'ansible_(?:ssh_pass|become_pass|password)\s*[:=]\s*[''"]?\S+[''"]?|variable\s+[''"]password[''"]\s*\{[^}]*default\s*=\s*[''"][^''"]{3,16}[''"]'
+    category: "Server Tooling"
+    severity: "medium"
+    note: "Plaintext password in Ansible/Terraform variable. Move to Ansible Vault or Terraform secrets backend."
+
+  # ---- Broker & IdP -------------------------------------------------
+
+  - name: "RabbitMQ Guest / Default Credentials"
+    regex: 'RABBITMQ_DEFAULT_(?:USER|PASS)\s*[:=]\s*[''"]?(?:guest|admin|password|rabbitmq)[''"]?'
+    category: "Broker & IdP"
+    severity: "high"
+    note: "RabbitMQ default credentials in use. Change RABBITMQ_DEFAULT_USER/PASS and disable guest remote access."
+
+  - name: "Keycloak Admin Default Credentials"
+    regex: 'KEYCLOAK_(?:ADMIN|ADMIN_PASSWORD|USER|PASSWORD)\s*[:=]\s*[''"]?(?:admin|password|keycloak|secret|changeme)[''"]?'
+    category: "Broker & IdP"
+    severity: "high"
+    note: "Keycloak admin credentials are default. Set strong credentials and restrict admin console access."
+
+  - name: "Redis No Auth / Weak Auth"
+    regex: 'requirepass\s+[''"]?(?:|password|redis|admin|secret|changeme|123456)[''"]?'
+    category: "Broker & IdP"
+    severity: "high"
+    note: "Redis has no password or a weak default. Set a strong requirepass value and enable ACL-based access."
+
+  - name: "Kubernetes Secret Weak Base64 Value"
+    regex: 'YWRtaW4=|cGFzc3dvcmQ=|cm9vdA==|Z3Vlc3Q=|c2VjcmV0|MTIzNDU2|Y2hhbmdlbWU='
+    category: "Broker & IdP"
+    severity: "high"
+    note: "Kubernetes secret contains a base64-encoded weak password. Replace with a strong value and use Sealed Secrets or external secrets operator."
