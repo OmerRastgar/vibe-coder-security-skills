@@ -1,0 +1,132 @@
+# Flawed Object Authorization audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+  - test
+  - tests
+  - __tests__
+  - spec
+
+# File extensions to scan (backend source)
+source_extensions:
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".py"
+  - ".go"
+  - ".java"
+  - ".cs"
+  - ".rb"
+  - ".php"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : BOLA | Mass Assignment | Sequential ID | Tenant Manipulation
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- BOLA / ID Hopping --------------------------------------------
+
+  - name: "findById Without Ownership Check"
+    regex: '\.findById\s*\(\s*req\.|\.findByPk\s*\(\s*req\.|\.findOne\s*\(\s*\{\s*(?:id|_id)\s*:\s*req\.'
+    category: "BOLA"
+    severity: "high"
+    note: "Object fetched by client-supplied ID with no visible ownership filter. Add AND user_id/tenant_id = session value."
+
+  - name: "Raw SQL WHERE id = param"
+    regex: 'WHERE\s+(?:id|uuid|_id)\s*=\s*(?:\$\d+|\?|:id|req\.|params\.|query\.)'
+    category: "BOLA"
+    severity: "high"
+    note: "SQL query filters by ID only. Verify a second condition checks ownership: AND owner_id = $session_user."
+
+  - name: "GraphQL Resolver id Arg Without Auth Check"
+    regex: 'args\.id|context\.args\.id|resolve\s*\(.*\{\s*id\s*\}'
+    category: "BOLA"
+    severity: "medium"
+    note: "GraphQL resolver receives an id argument. Verify ctx.user.id ownership is asserted before returning the record."
+
+  - name: "Express / FastAPI Route Param Lookup"
+    regex: 'req\.params\.\w*[Ii][Dd]\b|request\.path_params\[\s*[''"](?:id|uuid|slug)[''"]\s*\]'
+    category: "BOLA"
+    severity: "medium"
+    note: "Route param used as DB lookup key. Confirm an ownership/tenancy filter is also applied in the query."
+
+  # ---- Mass Assignment ----------------------------------------------
+
+  - name: "ORM Update With req.body Spread"
+    regex: '\.update\s*\(\s*req\.body\b|\.save\s*\(\s*req\.body\b|\$set\s*:\s*req\.body|Object\.assign\s*\(\s*\w+\s*,\s*req\.body'
+    category: "Mass Assignment"
+    severity: "high"
+    note: "ORM update called directly with req.body. Use an explicit field allow-list to prevent role/privilege injection."
+
+  - name: "Python dict unpack into ORM save"
+    regex: '\*\*\s*request\.(?:json|data|form)\s*\(\s*\)|\*\*\s*(?:data|payload|body)\b.*\.(?:save|update|create)\s*\('
+    category: "Mass Assignment"
+    severity: "high"
+    note: "Request dict unpacked into ORM call. Define a Pydantic/serializer schema with explicit field allow-list."
+
+  - name: "Mongoose findByIdAndUpdate With req.body"
+    regex: 'findByIdAndUpdate\s*\(\s*\w*[Ii][Dd]\w*\s*,\s*req\.body'
+    category: "Mass Assignment"
+    severity: "high"
+    note: "findByIdAndUpdate called with raw req.body. Attacker can inject any schema field. Allow-list the update payload."
+
+  - name: "Sequelize / Prisma update With req.body"
+    regex: '\.update\s*\(\s*\{\s*(?:data|where).*req\.body|prisma\.\w+\.update\s*\(\s*\{[^}]*data\s*:\s*req\.body'
+    category: "Mass Assignment"
+    severity: "high"
+    note: "Prisma/Sequelize update uses raw req.body as the data payload. Pick only permitted fields explicitly."
+
+  # ---- Sequential IDs -----------------------------------------------
+
+  - name: "Integer Auto-Increment ID in Route"
+    regex: '/api/\w+/:\w*[Ii][Dd]\b|router\.\w+\s*\(\s*[''"][^''"]*:\w*[Ii][Dd][''"]'
+    category: "Sequential ID"
+    severity: "medium"
+    note: "Route exposes a resource ID parameter. If the underlying key is an integer, switch to UUID/ULID to prevent enumeration."
+
+  - name: "Integer Primary Key in Migration / Model"
+    regex: 'id\s+(?:INTEGER|SERIAL|BIGINT|INT)\s+(?:PRIMARY KEY|AUTO_INCREMENT|AUTOINCREMENT)|autoIncrement\s*:\s*true|@GeneratedValue\s*\(\s*strategy\s*=\s*GenerationType\.IDENTITY'
+    category: "Sequential ID"
+    severity: "medium"
+    note: "Integer auto-increment primary key on a public-facing model. Expose a UUID/ULID instead on public API paths."
+
+  - name: "Sequential ID in API Response"
+    regex: '"id"\s*:\s*\d{1,6}\b|res\.json\s*\(\s*\{[^}]*id\s*:\s*\w+\.[Ii][Dd]\b'
+    category: "Sequential ID"
+    severity: "medium"
+    note: "Small integer ID returned in API response. Predictable IDs enable enumeration attacks."
+
+  # ---- Tenant Manipulation ------------------------------------------
+
+  - name: "Tenant ID Read From Request Body"
+    regex: 'req\.body\.(?:tenant_id|tenantId|org_id|orgId|account_id|accountId|workspace_id)|request\.(?:json|data)\s*\(\s*\).*(?:tenant_id|org_id|account_id)'
+    category: "Tenant Manipulation"
+    severity: "high"
+    note: "Tenant/org ID sourced from request body. Read it from the authenticated session or JWT claim instead."
+
+  - name: "Tenant ID Read From Query String"
+    regex: 'req\.query\.(?:tenant_id|tenantId|org_id|orgId|account_id|workspace_id)|request\.args\.get\s*\(\s*[''"](?:tenant_id|org_id|account_id)[''"]\s*\)'
+    category: "Tenant Manipulation"
+    severity: "high"
+    note: "Tenant/org ID sourced from query string. An attacker can supply any value. Use session context instead."
+
+  - name: "DB Query Tenant Filter From User Input"
+    regex: 'WHERE.*tenant_id\s*=\s*(?:req\.|params\.|query\.|body\.)|filter\s*\(\s*tenant\s*=\s*(?:req\.|data\[)'
+    category: "Tenant Manipulation"
+    severity: "high"
+    note: "DB query filters by a tenant_id value sourced from user-controlled input. Use the authenticated session tenant instead."
