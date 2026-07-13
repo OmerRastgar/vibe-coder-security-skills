@@ -103,14 +103,17 @@ def number(folder):
 
 
 def build():
+    """Build both the root Readme.md and the vulnerabilities/ index README.
+
+    Returns (root_md, index_md). The per-folder README.md + prompt.md files are
+    the single source of truth; everything else is generated from them.
+    """
     if not os.path.isfile(TEMPLATE):
         print(f"ERROR: template not found at {TEMPLATE}", file=sys.stderr)
         sys.exit(1)
 
     template = read(TEMPLATE).rstrip() + "\n"
-
     parts = [template]
-
     if not template.endswith("\n"):
         parts.append("\n")
 
@@ -135,48 +138,82 @@ def build():
         num = number(folder)
         targets = primary_targets(folder)
 
-        # section heading mirrors the legacy Readme style
-        heading = f"## Vulnerability {num}: {title}"
         index_rows.append(
             f"| {num} | `{folder}` | {title} | {targets} |"
         )
 
+        heading = f"## Vulnerability {num}: {title}"
         section = [heading, "", ref.rstrip(), "", "### Prompt to do an Audit", "",
                    "```", prompt, "```", ""]
         sections.append("\n".join(section))
 
-    # Build the index table body (header + separator live in the template)
+    # --- root Readme.md ---
     index_md = "\n".join(index_rows) + "\n"
+    root = "\n".join(parts).rstrip() + "\n\n"
+    root += index_md + "\n"
+    root += "\n\n".join(sections) + "\n"
+    if not root.endswith("\n"):
+        root += "\n"
 
-    generated = "\n".join(parts).rstrip() + "\n\n"
-    generated += index_md + "\n"
-    generated += "\n\n".join(sections) + "\n"
+    # --- vulnerabilities/README.md (generated index + links) ---
+    idx_lines = [
+        "# Security Vulnerability Audit Library",
+        "",
+        "A structured library of security vulnerabilities extracted from the "
+        "*Vibe Coder Guide to Security*. Each vulnerability lives in its own "
+        "folder under `vulnerabilities/`, containing:",
+        "",
+        "- `README.md`    — merged detail + Attack Surface Flowchart",
+        "- `prompt.md`    — copy-paste audit prompt for an LLM / coding assistant",
+        "- `skill/`       — the skill definition (`SKILL.md`, `config.yml`) and scanners (`scripts/`)",
+        "",
+        "The full guide is assembled into the root [`../Readme.md`](../Readme.md) "
+        "by `scripts/build_readme.py`, which combines every folder's `README.md`. "
+        "Edit a folder's `README.md` and re-run the script to update everything.",
+        "",
+        "## Index",
+        "",
+        "| # | Folder | Vulnerability | Primary Targets |",
+        "|---|--------|---------------|-----------------|",
+    ]
+    idx_lines += index_rows
+    idx_lines += [
+        "",
+        "## How a skill should consume this",
+        "",
+        "1. Pick a vulnerability folder (`vulnerabilities/vN-...`).",
+        "2. Read `prompt.md` and feed it (with the target code as INPUT) to the LLM.",
+        "3. Open `README.md` in that folder to orient *where to look* before/while auditing.",
+        "",
+    ]
+    index_doc = "\n".join(idx_lines).rstrip() + "\n"
 
-    # ensure final newline
-    if not generated.endswith("\n"):
-        generated += "\n"
-    return generated
+    return root, index_doc
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--check", action="store_true",
-                    help="exit non-zero if Readme.md is out of date")
+                    help="exit non-zero if any generated README is out of date")
     args = ap.parse_args()
 
-    generated = build()
+    root, index_doc = build()
+    index_out = os.path.join(VULN_DIR, "README.md")
 
     if args.check:
-        existing = read(OUTPUT) if os.path.isfile(OUTPUT) else ""
-        if existing != generated:
-            print("Readme.md is out of date. Run: python scripts/build_readme.py")
+        root_ok = (read(OUTPUT) if os.path.isfile(OUTPUT) else "") == root
+        idx_ok = (read(index_out) if os.path.isfile(index_out) else "") == index_doc
+        if not (root_ok and idx_ok):
+            print("A generated README is out of date. Run: python scripts/build_readme.py")
             sys.exit(1)
-        print("Readme.md is up to date.")
+        print("All generated READMEs are up to date.")
         return
 
     with open(OUTPUT, "w", encoding="utf-8") as f:
-        f.write(generated)
-    print(f"Wrote {OUTPUT}")
+        f.write(root)
+    with open(index_out, "w", encoding="utf-8") as f:
+        f.write(index_doc)
+    print(f"Wrote {OUTPUT} and {index_out}")
 
 
 if __name__ == "__main__":
