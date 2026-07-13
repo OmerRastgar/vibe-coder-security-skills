@@ -1,0 +1,150 @@
+# Denial of Wallet & Rate-Limiting audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+  - test
+  - tests
+  - __tests__
+  - spec
+
+# File extensions to scan
+source_extensions:
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".py"
+  - ".go"
+  - ".java"
+  - ".cs"
+  - ".rb"
+  - ".php"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : AI Endpoints | Compute Tasks | Auth Abuse | Unbounded Queries
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- Costly AI Endpoints ------------------------------------------
+
+  - name: "Unguarded OpenAI Call"
+    regex: 'openai\.\w+\.create\s*\(|openai\.chat\.completions|openai\.completions\.create|client\.chat\.completions'
+    category: "AI Endpoints"
+    severity: "high"
+    note: "OpenAI API call found. Verify a per-user rate limiter and max_tokens cap are applied before this call."
+
+  - name: "Unguarded Anthropic Call"
+    regex: 'anthropic\.messages\.create|anthropic\.completions\.create|AnthropicClient\(\)|from anthropic import'
+    category: "AI Endpoints"
+    severity: "high"
+    note: "Anthropic API call found. Add a per-user token quota and rate limiter before hitting this endpoint."
+
+  - name: "Unguarded Cohere / HuggingFace / Replicate Call"
+    regex: 'cohere\.generate|cohere\.chat|replicate\.run\s*\(|InferenceClient\s*\(|pipeline\s*\(\s*[''"]text-generation'
+    category: "AI Endpoints"
+    severity: "high"
+    note: "Third-party AI API call without visible rate limiting. Add per-user quota enforcement."
+
+  - name: "LLM Call Without max_tokens Cap"
+    regex: '(?:openai|anthropic|cohere).*create\s*\([^)]*\)(?!\s*.*max_tokens)|messages\.create\s*\(\s*\{[^}]*\}[^)]*\)(?!\s*.*max_tokens)'
+    category: "AI Endpoints"
+    severity: "medium"
+    note: "LLM completion call with no max_tokens visible on the same line. A missing cap allows unbounded token spend."
+
+  - name: "Missing Rate Limiter on Route"
+    regex: 'router\.\w+\s*\(\s*[''"][^''"]*(?:generate|complete|chat|ai|llm|embed|summarize|translate)[^''"]'
+    category: "AI Endpoints"
+    severity: "medium"
+    note: "AI-related route found. Verify express-rate-limit, slowDown, or equivalent middleware is applied before the handler."
+
+  # ---- High-Compute Tasks -------------------------------------------
+
+  - name: "Synchronous PDF Generation"
+    regex: 'puppeteer\.launch|pdf\.create\s*\(|pdfkit\s*\(|wkhtmltopdf\s*\(|html-pdf|PDFDocument\s*\('
+    category: "Compute Tasks"
+    severity: "high"
+    note: "Synchronous PDF generation in request handler. Offload to a job queue (BullMQ, Celery) to avoid blocking the event loop."
+
+  - name: "Synchronous Image Processing"
+    regex: 'sharp\s*\(|Jimp\.|Image\.open\s*\(|PIL\.Image|cv2\.\w+\s*\(|imagemagick|ffmpeg\.input'
+    category: "Compute Tasks"
+    severity: "medium"
+    note: "Image/media processing in request handler. Offload to a background worker to prevent event loop starvation."
+
+  - name: "Synchronous Archive / Compression"
+    regex: 'archiver\s*\(|zipfile\.ZipFile|tarfile\.open|zlib\.deflate|AdmZip\s*\('
+    category: "Compute Tasks"
+    severity: "medium"
+    note: "Synchronous archive/compression in request handler. Offload to a job queue."
+
+  - name: "No Job Queue for Heavy Task"
+    regex: '(?:pdf|image|resize|compress|convert|render|export)\s*\(.*(?:req|request|ctx)\.|(?:req|request|ctx)\..*(?:pdf|image|resize|compress)'
+    category: "Compute Tasks"
+    severity: "medium"
+    note: "Heavy processing triggered directly from request context with no queue offload visible. Add BullMQ / Celery / Sidekiq delegation."
+
+  # ---- Auth Portal Abuse --------------------------------------------
+
+  - name: "Login Route Without Rate Limiter"
+    regex: 'router\.post\s*\(\s*[''"](?:/login|/signin|/auth/login|/api/login)|app\.post\s*\(\s*[''"](?:/login|/signin)'
+    category: "Auth Abuse"
+    severity: "high"
+    note: "Login route found. Verify a rate limiter with account lockout or exponential backoff is applied."
+
+  - name: "Register Route Without Rate Limiter"
+    regex: 'router\.post\s*\(\s*[''"](?:/register|/signup|/auth/register)|app\.post\s*\(\s*[''"](?:/register|/signup)'
+    category: "Auth Abuse"
+    severity: "high"
+    note: "Registration route found. Add rate limiting to prevent account-creation flooding."
+
+  - name: "OTP / SMS Resend Without Rate Limiter"
+    regex: 'router\.\w+\s*\(\s*[''"][^''"]*/(?:resend|send)[-_]?(?:otp|sms|code|verification|pin)[^''"]*[''"]|app\.\w+\s*\(\s*[''"][^''"]*/(?:resend|send)[-_]?(?:otp|sms)'
+    category: "Auth Abuse"
+    severity: "high"
+    note: "OTP/SMS resend route found. An unlimited resend endpoint bleeds SMS gateway budget. Add strict per-account attempt limits."
+
+  - name: "Forgot Password Without Rate Limiter"
+    regex: 'router\.post\s*\(\s*[''"](?:/forgot|/reset|/password-reset)|app\.post\s*\(\s*[''"](?:/forgot|/reset)'
+    category: "Auth Abuse"
+    severity: "medium"
+    note: "Password reset route found. Add rate limiting to prevent email/SMS flooding."
+
+  # ---- Unbounded Searches & DB Queries ------------------------------
+
+  - name: "LIKE Wildcard Full Table Scan"
+    regex: "LIKE\s+'%|ILIKE\s+'%|LIKE\s+\"%" 
+    category: "Unbounded Queries"
+    severity: "high"
+    note: "Leading wildcard LIKE/ILIKE causes a full table scan. Add a GIN/trgm index or move to full-text search."
+
+  - name: "MongoDB Unindexed Regex Query"
+    regex: '\$regex\s*:|\.find\s*\(\s*\{[^}]*\$regex'
+    category: "Unbounded Queries"
+    severity: "high"
+    note: "MongoDB $regex on a potentially unindexed field. Ensure a text index or prefix-only regex is used."
+
+  - name: "Unbounded Pagination / SELECT *"
+    regex: 'SELECT\s+\*\s+FROM\s+\w+(?!\s+WHERE|\s+LIMIT)|\.find\s*\(\s*\)\s*\.\s*limit\s*\(\s*(?:req\.|query\.|params\.)'
+    category: "Unbounded Queries"
+    severity: "high"
+    note: "Unbounded SELECT * or limit sourced from user input with no server-side cap. Set a hard maximum (e.g., LIMIT 100)."
+
+  - name: "ElasticSearch / OpenSearch No Size Cap"
+    regex: 'client\.search\s*\(\s*\{[^}]*(?:index|body)[^}]*\}[^)]*\)(?!\s*.*size\s*:)'
+    category: "Unbounded Queries"
+    severity: "medium"
+    note: "Elasticsearch search call without a visible size cap. Default can return 10,000 docs. Set size to a safe maximum."
