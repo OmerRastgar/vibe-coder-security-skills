@@ -1,0 +1,138 @@
+# Structural Type Enforcement audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+  - test
+  - tests
+  - __tests__
+  - spec
+
+# File extensions to scan
+source_extensions:
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".py"
+  - ".go"
+  - ".java"
+  - ".kt"
+  - ".cs"
+  - ".rb"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : JS-TS | Python ORM | Go | Automapper
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- JS / TypeScript ----------------------------------------------
+
+  - name: "Spread req.body Into ORM / Model Call"
+    regex: '\.\s*(?:update|create|insert|save|set)\s*\(\s*\{[^}]*\.\.\.\s*req\.body'
+    category: "JS-TS"
+    severity: "high"
+    note: "req.body spread directly into ORM mutation. Use an explicit field allow-list to prevent privilege injection."
+
+  - name: "Object.assign With req.body"
+    regex: 'Object\.assign\s*\(\s*\w+\s*,\s*req\.body'
+    category: "JS-TS"
+    severity: "high"
+    note: "Object.assign merges all req.body fields onto the entity. Pick only permitted fields explicitly."
+
+  - name: "as any on Request Data"
+    regex: 'req\.body\s+as\s+any|request\.body\s+as\s+any|\(data\s+as\s+any\)|\(payload\s+as\s+any\)'
+    category: "JS-TS"
+    severity: "high"
+    note: "'as any' silences the TypeScript compiler. Remove the cast and define a strict interface for the request body."
+
+  - name: "Loose any Type on Route Handler Parameter"
+    regex: '(?:req|request)\s*:\s*any\b|body\s*:\s*any\b|payload\s*:\s*any\b'
+    category: "JS-TS"
+    severity: "medium"
+    note: "Route handler parameter typed as 'any'. Define a strict interface or Zod schema instead."
+
+  - name: "No Validation Schema Before DB Mutation"
+    regex: 'router\.(?:post|put|patch)\s*\(\s*[''"][^''"]+'
+    category: "JS-TS"
+    severity: "medium"
+    note: "Mutation route found. Verify a Zod / Joi / class-validator schema is applied before any ORM call."
+
+  # ---- Python ORM ---------------------------------------------------
+
+  - name: "Dict Unpack Into ORM Constructor"
+    regex: '\w+\s*\(\s*\*\*\s*(?:request\.json\s*\(\s*\)|request\.get_json\s*\(\s*\)|data|payload|body)\s*\)'
+    category: "Python ORM"
+    severity: "high"
+    note: "Raw dict unpacked into ORM constructor. Any key in the payload becomes a model attribute. Use an explicit field allow-list."
+
+  - name: "ORM update() With Raw Dict Unpack"
+    regex: '\.update\s*\(\s*\*\*\s*(?:request\.|data\b|payload\b|body\b)'
+    category: "Python ORM"
+    severity: "high"
+    note: "ORM .update() called with **unpacked request data. Restrict to permitted fields via a Pydantic schema or explicit dict."
+
+  - name: "Pydantic extra = allow"
+    regex: "extra\s*=\s*['\"]allow['\"]|extra\s*=\s*Extra\.allow|extra\s*=\s*'allow'"
+    category: "Python ORM"
+    severity: "high"
+    note: "Pydantic model accepts arbitrary extra fields. Change to extra='forbid' or extra='ignore' to prevent injection."
+
+  - name: "Django Serializer fields = __all__"
+    regex: "fields\s*=\s*['\"]__all__['\"]|fields\s*=\s*'__all__'"
+    category: "Python ORM"
+    severity: "high"
+    note: "Django serializer exposes all model fields. List only the fields the endpoint should read/write."
+
+  - name: "SQLAlchemy Raw Dict to Model"
+    regex: 'for\s+\w+\s*,\s*\w+\s+in\s+(?:data|payload|request_data)\.items\s*\(\s*\).*setattr|setattr\s*\(\s*\w+\s*,\s*\w+\s*,\s*\w+\s*\).*(?:data|payload)\.items'
+    category: "Python ORM"
+    severity: "high"
+    note: "Dynamic setattr loop over request data keys. An attacker can set any model attribute. Validate keys against an allow-list."
+
+  # ---- Go -----------------------------------------------------------
+
+  - name: "json.Unmarshal Into map[string]interface{}"
+    regex: 'json\.Unmarshal\s*\([^)]*,\s*&?\s*map\s*\[\s*string\s*\]\s*interface\s*\{\s*\}'
+    category: "Go"
+    severity: "high"
+    note: "Unmarshalling into an untyped map loses all structural validation. Unmarshal into a defined struct with validation tags."
+
+  - name: "Bind Into Empty Interface"
+    regex: 'c\.(?:Bind|ShouldBind|BindJSON|ShouldBindJSON)\s*\(\s*&?\s*(?:interface\{\}|map\[string\]interface\{\})'
+    category: "Go"
+    severity: "high"
+    note: "HTTP body bound into an untyped interface. Define a strict struct with binding/validation tags."
+
+  # ---- Automapper / Compiled ----------------------------------------
+
+  - name: "AutoMapper CreateMap Without ForMember"
+    regex: 'CreateMap\s*<[^>]+>\s*\(\s*\)(?!\s*\.ForMember)'
+    category: "Automapper"
+    severity: "high"
+    note: "AutoMapper profile maps all properties blindly. Add .ForMember() to explicitly ignore or restrict sensitive destination fields."
+
+  - name: "Java BeanUtils.copyProperties"
+    regex: 'BeanUtils\.copyProperties\s*\('
+    category: "Automapper"
+    severity: "high"
+    note: "BeanUtils.copyProperties copies all matching properties including privileged fields. Use an explicit field-by-field mapping."
+
+  - name: "Java ModelMapper / MapStruct Unfiltered"
+    regex: 'modelMapper\.map\s*\(|new\s+ModelMapper\s*\(\s*\)|@Mapper(?!\s*\([^)]*uses)'
+    category: "Automapper"
+    severity: "medium"
+    note: "ModelMapper/MapStruct used without explicit configuration. Verify no sensitive entity fields are mapped from user-controlled DTOs."
