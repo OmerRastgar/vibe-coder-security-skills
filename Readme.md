@@ -10,9 +10,32 @@ For every security vulnerability, you will find:
 - A standalone Mermaid flowchart that visually maps where the vulnerability typically exists within an application's architecture, including the affected components, files, services, and code paths. These diagrams are designed to show you **where to look**, since AI-generated code and automated reviews often miss the broader architectural context.
 - A ready-to-use prompt that you can simply copy and paste into your preferred LLM or AI coding assistant. The prompt instructs the AI to inspect your project for that specific vulnerability, identify the affected files and code, explain its findings.
 
+## Index
+
+| # | Folder | Vulnerability | Primary Targets |
+|---|--------|---------------|-----------------|
+
+| 1 | `v1-ai-commit-trap` | AI Commit Trap | exposed configurations, `.env` files, and Terraform manifests to compromised API keys, AWS credentials, and Kubeconfigs. |
+| 2 | `v2-package-hallucination` | Package Hallucination | dependency manifests, lockfiles, CI/CD & infra, source code imports. |
+| 3 | `v3-client-side-misplacement` | Client-Side Security Misplacements | Auth & access navigation, forms & inputs, data flow & math. |
+| 4 | `v4-disabled-data-isolation` | Disabled Data Isolation | RDBMS, NoSQL/Document & Key-Value, Vector & Graph AI Layer, BaaS & Cloud Layers. |
+| 5 | `v5-missing-input-validation` | Missing Input Validation | JSON payloads & bodies, file & media uploads, URL params & queries, forms & headers. |
+| 6 | `v6-baking-secrets` | Baking Secrets into Source | inline code variables, dev boilerplates, cloud & infra access, version control leaks. |
+| 7 | `v7-ai-default-credentials` | AI Default Credentials | DB init scripts, admin dashboards, server tooling, identity & MQ brokers. |
+| 8 | `v8-flawed-object-authorization` | Flawed Object Authorization | ID hopping / BOLA, mass assignment, sequential IDs, tenant manipulation. |
+| 9 | `v9-denial-of-wallet` | Denial of Wallet & Rate-Limiting | costly AI endpoints, high-compute tasks, auth portal abuse, unbounded searches. |
+| 10 | `v10-cors-iam-perimeter` | CORS & IAM Perimeter Dissolution | CORS misconfigurations, IAM resource wildcards, IMDS metadata leaks, over-provisioned keys. |
+| 11 | `v11-structural-type-enforcement` | Structural Type Enforcement | JS/TS (Node.js), Python (FastAPI/Django), reflection / low-level bypasses. |
+
 ## Vulnerability 1: AI Commit Trap
 
-**Detail:** This vulnerability focuses on the risk of AI assistants and developers inadvertently leaking sensitive secrets into version control systems (like GitHub or GitLab) and container registries (like Docker Hub). It illustrates the pathway from exposed configurations, `.env` files, and Terraform manifests to compromised API keys, AWS credentials, and Kubeconfigs.
+Accidental leakage of cryptographic keys, API credentials, configuration files, or environment manifests into version control histories or container registries.
+
+Pathways: exposed configurations, `.env` files, and Terraform manifests to compromised API keys, AWS credentials, and Kubeconfigs.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -99,10 +122,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact matching line/snippet here, masking the actual secret value for safety, e.g., AIzaSy...xxxx]
 ```
+```
+
 
 ## Vulnerability 2: Package Hallucination
 
-**Detail:** This vulnerability addresses a unique AI-era vulnerability where Large Language Models "hallucinate" non-existent software packages. Malicious actors scan for these common hallucinations and squat on those names in package registries. If a developer uses the AI's hallucinated code, their manifests and lockfiles pull down malicious payloads.
+A unique AI-era vulnerability where LLMs "hallucinate" non-existent software packages. Malicious actors scan for these common hallucinations and squat on those names in package registries. If a developer uses the AI's hallucinated code, their manifests and lockfiles pull down malicious payloads.
+
+Targets: dependency manifests, lockfiles, CI/CD & infra, source code imports.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -149,7 +180,7 @@ flowchart TD
     style DFile color:#000000, fill:#EFFFDE, stroke:#C5E1A5
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -192,9 +223,16 @@ Provide your analysis using the following structured layout:
   3. Clean local package caches (`npm cache clean`, `pip cache purge`) to ensure no malicious payloads were stored.
 ```
 
+
 ## Vulnerability 3: Client-Side Security Misplacements
 
-**Detail:** Focuses on applications that misplace their trust in frontend client logic rather than backend enforcement. It maps out vulnerabilities where route guards, feature flags, checkout math, or unverified JWT claims can be bypassed directly by manipulating the browser environment.
+Applications that misplace their trust in frontend client logic rather than backend enforcement. Route guards, feature flags, checkout math, or unverified JWT claims can be bypassed directly by manipulating the browser environment.
+
+Targets: Auth & access navigation, forms & inputs, data flow & math.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -247,7 +285,7 @@ flowchart TD
     style APIPayloads color:#000000, fill:#FFF3E0, stroke:#FFE0B2
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -287,10 +325,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact client-side code snippet where the logic flaw or client trust occurs]
 ```
+```
+
 
 ## Vulnerability 4: Disabled Data Isolation
 
-**Detail:** This vulnerability investigates cross-tenant data leaks and the failure to enforce proper data boundaries. It tracks where policies are missing or disabled across relational DBs (missing RLS), NoSQL layers (shared keyspaces), Vector/Graph databases, and BaaS platforms (wildcard client rules).
+Cross-tenant data leaks and the failure to enforce proper data boundaries. Policies are missing or disabled across relational DBs (missing RLS), NoSQL layers (shared keyspaces), Vector/Graph databases, and BaaS platforms (wildcard client rules).
+
+Targets: RDBMS, NoSQL/Document & Key-Value, Vector & Graph AI Layer, BaaS & Cloud Layers.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -343,7 +389,7 @@ flowchart TD
     style PublicRules color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -382,10 +428,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact database schema, policy definition, or configuration snippet showing the isolation gap]
 ```
+```
+
 
 ## Vulnerability 5: Missing Input Validation
 
-**Detail:** Tracks how failing to deeply validate or cast incoming user inputs (the "Happy Path" assumption) leads to systemic abuse. Targets include type bypassing in JSON bodies, extension spoofing in file uploads, pagination abuse via URL parameters, and webhook signature spoofing.
+Failing to deeply validate or cast incoming user inputs (the "Happy Path" assumption) leads to systemic abuse. Targets include type bypassing in JSON bodies, extension spoofing in file uploads, pagination abuse via URL parameters, and webhook signature spoofing.
+
+Targets: JSON payloads & bodies, file & media uploads, URL params & queries, forms & headers.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -437,7 +491,7 @@ flowchart TD
     style HeaderInj color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -476,10 +530,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact backend code snippet where the incoming parameter or payload bypasses deep verification]
 ```
+```
+
 
 ## Vulnerability 6: Baking Secrets into Source
 
-**Detail:** Outlines the pathways by which credentials and configurations become permanently fused into source code. Attack vectors range from hardcoded API strings and DB URIs in the codebase, to staging credentials left in dev boilerplates, and historical keys buried in old Git commits.
+Pathways by which credentials and configurations become permanently fused into source code. Vectors range from hardcoded API strings and DB URIs, to staging credentials left in dev boilerplates, and historical keys buried in old Git commits.
+
+Targets: inline code variables, dev boilerplates, cloud & infra access, version control leaks.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -531,7 +593,7 @@ flowchart TD
     style GitHistory color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -570,10 +632,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact code snippet containing the hardcoded secret, masking middle characters for security, e.g., secret_key = "AIzaSyDxxxxxxxxx_v1"]
 ```
+```
+
 
 ## Vulnerability 7: AI Default Credentials
 
-**Detail:** Highlights systems launched with predictable, default credentials (frequently suggested as boilerplate by AI tools). This spans across initialized Docker databases (`admin:admin`), staging admin dashboards without forced password resets, exposed message brokers (like RabbitMQ's guest access), and identity provider wildcards.
+Systems launched with predictable, default credentials (frequently suggested as boilerplate by AI tools). Spans across initialized Docker databases (`admin:admin`), staging admin dashboards without forced password resets, exposed message brokers (like RabbitMQ's guest access), and identity provider wildcards.
+
+Targets: DB init scripts, admin dashboards, server tooling, identity & MQ brokers.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -625,7 +695,7 @@ flowchart TD
     style MqGuest color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -664,10 +734,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact configuration block, environment pair, or script line containing the default credential string]
 ```
+```
+
 
 ## Vulnerability 8: Flawed Object Authorization
 
-**Detail:** This vulnerability models Broken Object Level Authorization (BOLA/IDOR) and mass assignment flaws. It shows the flow of how attackers can manipulate raw API parameters to access direct models, guess sequential auto-increment IDs for data scraping, or inject tenant IDs to bypass data isolation limits.
+Models Broken Object Level Authorization (BOLA/IDOR) and mass assignment flaws. Attackers manipulate raw API parameters to access direct models, guess sequential auto-increment IDs for data scraping, or inject tenant IDs to bypass data isolation limits.
+
+Targets: ID hopping / BOLA, mass assignment, sequential IDs, tenant manipulation.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -719,7 +797,7 @@ flowchart TD
     style CrossOrgPayloads color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -758,10 +836,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact backend route or database operation snippet showcasing the authorization or serialization gap]
 ```
+```
+
 
 ## Vulnerability 9: Denial of Wallet & Rate-Limiting
 
-**Detail:** Targets financial and resource exhaustion by leveraging unmetered boundaries. Attackers hit costly AI endpoints without user quotas, run blocking synchronous loops for compute-heavy tasks, trigger cloud-autoscaling bloat, and perform credential stuffing or SMS pumping on unrestricted auth endpoints.
+Financial and resource exhaustion by leveraging unmetered boundaries. Attackers hit costly AI endpoints without user quotas, run blocking synchronous loops for compute-heavy tasks, trigger cloud-autoscaling bloat, and perform credential stuffing or SMS pumping on unrestricted auth endpoints.
+
+Targets: costly AI endpoints, high-compute tasks, auth portal abuse, unbounded searches.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -813,7 +899,7 @@ flowchart TD
     style RegexScans color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -852,10 +938,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact application route handler, middleware stack, or background process block containing the unthrottled vector]
 ```
+```
+
 
 ## Vulnerability 10: CORS & IAM Perimeter Dissolution
 
-**Detail:** Outlines the breakdown of network and identity boundaries in cloud setups. It highlights how wildcard CORS settings allow unauthorized cross-origin requests, broad IAM policies grant untethered access, and missing network protections lead to IMDS metadata SSRF attacks and cloud token harvesting.
+Breakdown of network and identity boundaries in cloud setups. Wildcard CORS settings allow unauthorized cross-origin requests, broad IAM policies grant untethered access, and missing network protections lead to IMDS metadata SSRF attacks and cloud token harvesting.
+
+Targets: CORS misconfigurations, IAM resource wildcards, IMDS metadata leaks, over-provisioned keys.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -907,7 +1001,7 @@ flowchart TD
     style ServiceRoleBypass color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
 
-**Prompt for Code audit** 
+### Prompt to do an Audit
 
 ```
 ### ROLE
@@ -946,10 +1040,18 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact CORS statement, IAM JSON rule, or SSRF-susceptible client code snippet showing the edge gap]
 ```
+```
 
-## Vulnerability 11: Structureal Type Enforcement
 
-**Detail:** This vulnerability highlights the risks of loose type enforcement and mass assignment when mapping user input to internal data structures. It covers dangerous practices like using spread operators in JavaScript/TypeScript, bypassing validation with `as any`, unpacking raw JSON dictionaries directly into ORMs in Python, and utilizing overly permissive DTOs or blind automappers in compiled languages.
+## Vulnerability 11: Structural Type Enforcement
+
+Risks of loose type enforcement and mass assignment when mapping user input to internal data structures. Dangerous practices include using spread operators in JavaScript/TypeScript, bypassing validation with `as any`, unpacking raw JSON dictionaries directly into ORMs in Python, and utilizing overly permissive DTOs or blind automappers in compiled languages.
+
+Targets: JS/TS (Node.js), Python (FastAPI/Django), reflection / low-level bypasses.
+
+---
+
+## Attack Surface Flowchart
 
 ```mermaid
 flowchart TD
@@ -1006,6 +1108,8 @@ flowchart TD
     style LooseMaps color:#000000, fill:#F3E5F5, stroke:#E1BEE7
 ```
 
+### Prompt to do an Audit
+
 ```
 ### ROLE
 You are an expert Static Application Security Testing (SAST) Engineer, Abstract Syntax Tree (AST) Auditor, and Secure Code Reviewer specializing in type safety, serialization hygiene, and mass assignment prevention. Your core objective is to analyze application code, interface contracts, and Object-Relational Mapping (ORM) routines to identify "Structural Type Enforcement" vulnerabilities—flaws where loose typing, blanket type coercion, or unfiltered dictionary transformations bypass compilation guards and contaminate downstream persistence domains.
@@ -1043,27 +1147,5 @@ Provide your analysis using the following structured layout:
 - **Evidence:** ```[language]
   [Insert the exact code block or runtime configuration option where type validation or property restriction is bypassed]
 ```
+```
 
-## Per-Vulnerability Reference Files
-
-Each vulnerability also has a self-contained `reference.md` (merged detail + flowchart) under `vulnerabilities/`:
-
-- [V1 — AI Commit Trap](vulnerabilities/v1-ai-commit-trap/reference.md)
-- [V2 — Package Hallucination](vulnerabilities/v2-package-hallucination/reference.md)
-- [V3 — Client-Side Security Misplacements](vulnerabilities/v3-client-side-misplacement/reference.md)
-- [V4 — Disabled Data Isolation](vulnerabilities/v4-disabled-data-isolation/reference.md)
-- [V5 — Missing Input Validation](vulnerabilities/v5-missing-input-validation/reference.md)
-- [V6 — Baking Secrets into Source](vulnerabilities/v6-baking-secrets/reference.md)
-- [V7 — AI Default Credentials](vulnerabilities/v7-ai-default-credentials/reference.md)
-- [V8 — Flawed Object Authorization](vulnerabilities/v8-flawed-object-authorization/reference.md)
-- [V9 — Denial of Wallet & Rate-Limiting](vulnerabilities/v9-denial-of-wallet/reference.md)
-- [V10 — CORS & IAM Perimeter Dissolution](vulnerabilities/v10-cors-iam-perimeter/reference.md)
-- [V11 — Structural Type Enforcement](vulnerabilities/v11-structural-type-enforcement/reference.md)
-
-## Great References
-
-https://www.sherlockforensics.com/blog/security-prompts-every-vibe-coder-needs.html
-
-https://snehbavarva.medium.com/secure-vibe-coding-in-2026-the-files-prompts-and-rules-of-use-and-research-e821021ee908
-
-[https://catdoes.com/blog/vibe-coding-security-checklist](https://catdoes.com/blog/vibe-coding-security-checklist)

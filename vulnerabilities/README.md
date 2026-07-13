@@ -2,9 +2,9 @@
 
 A structured library of 11 security vulnerabilities extracted from the *Vibe Coder Guide to Security*. Each vulnerability lives in its own folder under `vulnerabilities/`, containing:
 
-- `detail.md`    — short human-readable description of the vulnerability
+- `README.md`    — merged detail + Attack Surface Flowchart, and a back-link to the main guide
 - `prompt.md`    — copy-paste audit prompt for an LLM / coding assistant
-- `flowchart.md` — standalone Mermaid flowchart showing where the vuln lives in an app's architecture
+- `skill/`       — the skill definition (`SKILL.md`, `config.yml`) and scanners (`scripts/`)
 
 ## How a skill should consume this
 
@@ -12,8 +12,7 @@ A skill that audits a target codebase for a vulnerability should:
 
 1. Pick a vulnerability folder (`vulnerabilities/vN-...`).
 2. Read `prompt.md` and feed it (with the target code as INPUT) to the LLM.
-3. Use `flowchart.md` to orient *where to look* in the codebase before/while auditing.
-4. (Optional) Read `detail.md` for a plain-language summary to include in the report.
+3. Open `README.md` to orient *where to look* in the codebase before/while auditing (it links back to the full guide in the main `../Readme.md`).
 
 ## Index
 
