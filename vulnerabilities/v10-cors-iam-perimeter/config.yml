@@ -1,0 +1,141 @@
+# CORS & IAM Perimeter Dissolution audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+
+# File extensions to scan
+source_extensions:
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".py"
+  - ".go"
+  - ".rb"
+  - ".java"
+  - ".cs"
+  - ".json"
+  - ".yml"
+  - ".yaml"
+  - ".tf"
+  - ".hcl"
+  - ".conf"
+  - ".nginx"
+  - ".env"
+
+# -----------------------------------------------------------------------
+# Pattern groups
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : CORS | IAM Wildcards | SSRF | Service Keys
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- CORS Misconfigurations ---------------------------------------
+
+  - name: "Wildcard CORS Origin"
+    regex: 'cors\s*\(\s*\{[^}]*origin\s*:\s*["'']\*["'']|Access-Control-Allow-Origin\s*:\s*\*|allow_origins\s*=\s*\[\s*["'']\*["'']'
+    category: "CORS"
+    severity: "high"
+    note: "Wildcard CORS origin allows any domain to make cross-origin requests. Restrict to an explicit allow-list."
+
+  - name: "CORS Origin Reflection"
+    regex: 'Access-Control-Allow-Origin.*req\.headers\.origin|res\.set\s*\(\s*["'']Access-Control-Allow-Origin["'']\s*,\s*req\.headers|setHeader\s*\(.*Access-Control-Allow-Origin.*req\.'
+    category: "CORS"
+    severity: "high"
+    note: "CORS origin reflected from request header without whitelist check — equivalent to wildcard. Validate against an explicit allow-list."
+
+  - name: "CORS Credentials True With Permissive Origin"
+    regex: 'credentials\s*:\s*true.*origin|origin.*credentials\s*:\s*true|allow_credentials\s*=\s*True'
+    category: "CORS"
+    severity: "high"
+    note: "credentials: true with a permissive/wildcard origin. Browsers will refuse but the intent is dangerous. Use an explicit origin list."
+
+  - name: "cors() Middleware Without Options"
+    regex: 'app\.use\s*\(\s*cors\s*\(\s*\)\s*\)|app\.use\s*\(cors\(\)\)'
+    category: "CORS"
+    severity: "medium"
+    note: "cors() middleware applied with no options — defaults to origin: *. Pass an explicit allowlist."
+
+  # ---- IAM Wildcards ------------------------------------------------
+
+  - name: "IAM Action Wildcard"
+    regex: '"Action"\s*:\s*"\*"|"Action"\s*:\s*\[\s*"\*"\s*\]|actions\s*=\s*\[\s*"\*"\s*\]|action\s*=\s*"\*"'
+    category: "IAM Wildcards"
+    severity: "high"
+    note: "IAM policy grants all actions (*). Apply least-privilege — list only the specific actions required."
+
+  - name: "IAM Resource Wildcard"
+    regex: '"Resource"\s*:\s*"\*"|resources\s*=\s*\[\s*"\*"\s*\]|resource\s*=\s*"\*"'
+    category: "IAM Wildcards"
+    severity: "high"
+    note: "IAM policy applies to all resources (*). Scope to specific ARNs."
+
+  - name: "Kubernetes RBAC Wildcard Verbs"
+    regex: 'verbs:\s*-\s*\*|verbs\s*:\s*\[\s*"\*"\s*\]'
+    category: "IAM Wildcards"
+    severity: "high"
+    note: "Kubernetes RBAC ClusterRole grants all verbs (*). Restrict to the minimum set (get, list, watch)."
+
+  - name: "Serverless IAM Allow All"
+    regex: 'Effect:\s*Allow.*Action:\s*\*|Effect:\s*Allow.*actions:\s*- \*'
+    category: "IAM Wildcards"
+    severity: "high"
+    note: "Serverless framework IAM statement allows all actions. Specify only the permissions the function needs."
+
+  # ---- SSRF / IMDS Leaks --------------------------------------------
+
+  - name: "User-Controlled URL in HTTP Client"
+    regex: 'fetch\s*\(\s*req\.|axios\.get\s*\(\s*req\.|axios\.post\s*\(\s*req\.|requests\.get\s*\(\s*url|http\.get\s*\(\s*req\.'
+    category: "SSRF"
+    severity: "high"
+    note: "Outbound HTTP call with user-controlled URL. Without a strict allow-list, an attacker can target 169.254.169.254 to harvest cloud credentials."
+
+  - name: "IMDS Metadata Endpoint Reference"
+    regex: '169\.254\.169\.254|metadata\.google\.internal|fd00:ec2::254|instance-data\.ec2\.internal'
+    category: "SSRF"
+    severity: "high"
+    note: "Reference to the cloud instance metadata endpoint. Ensure IMDSv2 is enforced and this path is not reachable from user-controlled input."
+
+  - name: "SSRF via URL Query Param"
+    regex: 'req\.query\.url|req\.query\.target|req\.body\.url|req\.body\.endpoint|request\.args\.get\s*\(\s*[''"]url[''"]'
+    category: "SSRF"
+    severity: "high"
+    note: "URL target read from user-supplied query/body parameter. Validate against a strict allow-list before making an outbound request."
+
+  # ---- Service Key Exposure -----------------------------------------
+
+  - name: "Supabase Service Role Key in Source"
+    regex: 'SUPABASE_SERVICE_ROLE_KEY|createClient.*service_role|supabaseAdmin.*service_role'
+    category: "Service Keys"
+    severity: "high"
+    note: "Supabase service-role key bypasses all RLS policies. Use only in isolated server-side contexts, never in client bundles."
+
+  - name: "NEXT_PUBLIC Secret Key"
+    regex: 'NEXT_PUBLIC_(?:SECRET|API_KEY|SERVICE_KEY|SUPABASE_SERVICE|PRIVATE)'
+    category: "Service Keys"
+    severity: "high"
+    note: "NEXT_PUBLIC_ prefix exposes this value to the browser bundle. Move secrets to server-side env vars only."
+
+  - name: "Firebase Admin SDK in Client Context"
+    regex: 'admin\.initializeApp|firebase-admin.*require|from [''"]firebase-admin[''"]'
+    category: "Service Keys"
+    severity: "high"
+    note: "Firebase Admin SDK imported — verify this is server-side only. Admin credentials must never reach the browser."
+
+  - name: "Over-Provisioned AWS Key in App Code"
+    regex: 'AWS_ACCESS_KEY_ID\s*=|aws_access_key_id\s*=|new AWS\.config\.update\s*\(\s*\{[^}]*accessKeyId'
+    category: "Service Keys"
+    severity: "high"
+    note: "AWS access key configured in application code. Use IAM instance roles or IRSA instead of long-lived keys."
