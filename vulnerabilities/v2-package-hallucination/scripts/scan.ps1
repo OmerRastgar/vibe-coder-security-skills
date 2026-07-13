@@ -26,87 +26,97 @@ else {
     $cfgPath = if (Test-Path $sibling) { $sibling } else { Join-Path $here "..\config.yml" }
 }
 
-# ---- minimal YAML reader (subset) ----
+# ---- purpose-built config reader for v2 config shape ----
 function Read-ConfigYaml {
     param([string]$Path)
-    $rawLines = Get-Content -Path $Path
-    $script:pos = 0
-    $script:tokens = @()
-    foreach ($raw in $rawLines) {
-        if ([string]::IsNullOrWhiteSpace($raw) -or $raw.TrimStart().StartsWith("#")) { continue }
-        $body = $raw
-        $inQ = $null; $out = ""
-        foreach ($ch in $body.ToCharArray()) {
-            if ($inQ) { $out += $ch; if ($ch -eq $inQ) { $inQ = $null } }
-            elseif ($ch -eq '"' -or $ch -eq "'") { $inQ = $ch; $out += $ch }
-            elseif ($ch -eq '#' -and $out.Trim() -eq "") { break }
-            else { $out += $ch }
-        }
-        $body = $out.Trim()
-        if ($body -eq "") { continue }
-        $indent = $body.Length - $body.TrimStart(" ").Length
-        if ($body.StartsWith("- ")) {
-            $script:tokens += [PSCustomObject]@{ ind = $indent; k = $null; val = $body.Substring(2).Trim() }
-        } elseif ($body -eq "-") {
-            $script:tokens += [PSCustomObject]@{ ind = $indent; k = $null; val = "" }
-        } elseif ($body -match "^(.*?):\s*(.*)$") {
-            $script:tokens += [PSCustomObject]@{ ind = $indent; k = $Matches[1].Trim(); val = $Matches[2].Trim() }
-        }
+
+    $out = @{
+        manifests                 = [System.Collections.Generic.List[string]]::new()
+        known_packages            = @{}
+        source_files              = @{}
+        ai_hallucination_patterns = [System.Collections.Generic.List[string]]::new()
+        exclude_patterns          = [System.Collections.Generic.List[string]]::new()
+        typosquat_max_distance    = 2
     }
-    function Strip-Q($s) {
+
+    function Strip-Quotes($s) {
         $s = $s.Trim()
-        if (($s.StartsWith('"') -and $s.EndsWith('"')) -or ($s.StartsWith("'") -and $s.EndsWith("'"))) { return $s.Substring(1, $s.Length - 2) }
-        return $s
-    }
-    $pos = 0
-    $parseBlock = {
-        param($minIndent)
-        $r = $null
-        while ($script:pos -lt $script:tokens.Count) {
-            $t = $script:tokens[$script:pos]
-            if ($t.ind -lt $minIndent) { break }
-            if ($t.k -eq $null) {
-                if ($r -eq $null) { $r = @() }
-                if ($r -is [hashtable]) { $r = @() }
-                if ($t.val -match "^(.+?):\s*(.*)$") {
-                    $m = @{ ($Matches[1].Trim()) = Strip-Q $Matches[2] }
-                    $script:pos++
-                    $r += $m
-                } else {
-                    $script:pos++
-                    $r += (Strip-Q $t.val)
-                }
-            } else {
-                if ($r -eq $null) { $r = @{} }
-                if ($r -isnot [hashtable]) { $r = @{} }
-                $script:pos++
-                if ($t.val -eq "") {
-                    $child = & $parseBlock ($t.ind + 1)
-                    if ($child -ne $null) { $r[$t.k] = $child }
-                } else {
-                    $r[$t.k] = Strip-Q $t.val
-                }
+        if ($s.Length -ge 2) {
+            $fc = $s[0]; $lc = $s[$s.Length - 1]
+            if (($fc -eq '"' -and $lc -eq '"') -or ($fc -eq "'" -and $lc -eq "'")) {
+                return $s.Substring(1, $s.Length - 2)
             }
         }
-        return $r
+        return $s
     }
-    $cfg = & $parseBlock 0
-    # Normalize into the shapes the scanner expects
-    $out = @{
-        manifests = @()
-        known_packages = @{}
-        source_files = @{}
-        ai_hallucination_patterns = @()
-        exclude_patterns = @()
-        typosquat_max_distance = 2
+
+    $lines   = Get-Content -Path $Path
+    $section = ""          # top-level key currently active
+    $subKey  = ""          # second-level key (for known_packages / source_files)
+
+    foreach ($raw in $lines) {
+        $inQ = $null; $o = ""
+        foreach ($ch in $raw.ToCharArray()) {
+            if ($inQ) { $o += $ch; if ($ch -eq $inQ) { $inQ = $null } }
+            elseif ($ch -eq '"' -or $ch -eq "'") { $inQ = $ch; $o += $ch }
+            elseif ($ch -eq '#' -and $o.TrimStart() -eq "") { break }
+            else { $o += $ch }
+        }
+        $line = $o.TrimEnd()
+        if ([string]::IsNullOrWhiteSpace($line)) { continue }
+        $trimmed = $line.TrimStart()
+        $indent  = $line.Length - $trimmed.Length
+
+        # top-level key (indent 0, ends with colon)
+        if ($indent -eq 0 -and $trimmed -match '^(\w[\w_-]*):\s*$') {
+            $section = $Matches[1]; $subKey = ""; continue
+        }
+
+        # top-level scalar value (e.g. typosquat_max_distance: 2)
+        if ($indent -eq 0 -and $trimmed -match '^(\w[\w_-]*):\s*(\S.*)$') {
+            $k = $Matches[1]; $v = Strip-Quotes $Matches[2]
+            if ($k -eq "typosquat_max_distance") { $out.typosquat_max_distance = [int]$v }
+            continue
+        }
+
+        # second-level map key under known_packages / source_files (e.g. "  npm:")
+        if ($indent -eq 2 -and $trimmed -match '^(\w[\w_-]*):\s*$' -and $section -in @("known_packages","source_files")) {
+            $subKey = $Matches[1]
+            if ($section -eq "known_packages" -and -not $out.known_packages.ContainsKey($subKey)) {
+                $out.known_packages[$subKey] = [System.Collections.Generic.List[string]]::new()
+            }
+            if ($section -eq "source_files" -and -not $out.source_files.ContainsKey($subKey)) {
+                $out.source_files[$subKey] = [System.Collections.Generic.List[string]]::new()
+            }
+            continue
+        }
+
+        # list item (indent 2 or 4)
+        if ($trimmed.StartsWith("- ")) {
+            $val = Strip-Quotes ($trimmed.Substring(2).Trim())
+            switch ($section) {
+                "manifests"                 { $out.manifests.Add($val) }
+                "ai_hallucination_patterns" { $out.ai_hallucination_patterns.Add($val) }
+                "exclude_patterns"          { $out.exclude_patterns.Add($val) }
+                "known_packages"            { if ($subKey -and $out.known_packages.ContainsKey($subKey)) { $out.known_packages[$subKey].Add($val) } }
+                "source_files"              { if ($subKey -and $out.source_files.ContainsKey($subKey))   { $out.source_files[$subKey].Add($val) } }
+            }
+            continue
+        }
     }
-    if ($cfg.manifests) { foreach ($m in $cfg.manifests) { $out.manifests += $m } }
-    if ($cfg.known_packages) { foreach ($k in $cfg.known_packages.Keys) { $out.known_packages[$k] = @($cfg.known_packages[$k]) } }
-    if ($cfg.source_files) { foreach ($k in $cfg.source_files.Keys) { $out.source_files[$k] = @($cfg.source_files[$k]) } }
-    if ($cfg.ai_hallucination_patterns) { $out.ai_hallucination_patterns = @($cfg.ai_hallucination_patterns) }
-    if ($cfg.exclude_patterns) { $out.exclude_patterns = @($cfg.exclude_patterns) }
-    if ($cfg.typosquat_max_distance) { $out.typosquat_max_distance = $cfg.typosquat_max_distance }
-    return $out
+
+    # convert Lists to arrays for compatibility with existing scan logic
+    $result = @{
+        manifests                 = @($out.manifests)
+        known_packages            = @{}
+        source_files              = @{}
+        ai_hallucination_patterns = @($out.ai_hallucination_patterns)
+        exclude_patterns          = @($out.exclude_patterns)
+        typosquat_max_distance    = $out.typosquat_max_distance
+    }
+    foreach ($k in $out.known_packages.Keys) { $result.known_packages[$k] = @($out.known_packages[$k]) }
+    foreach ($k in $out.source_files.Keys)   { $result.source_files[$k]   = @($out.source_files[$k]) }
+    return $result
 }
 
 function Norm($n) { return $n.Replace("_", "-").ToLower() }
