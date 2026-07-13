@@ -1044,6 +1044,22 @@ Provide your analysis using the following structured layout:
   [Insert the exact code block or runtime configuration option where type validation or property restriction is bypassed]
 ```
 
+## Per-Vulnerability Reference Files
+
+Each vulnerability also has a self-contained `reference.md` (merged detail + flowchart) under `vulnerabilities/`:
+
+- [V1 — AI Commit Trap](vulnerabilities/v1-ai-commit-trap/reference.md)
+- [V2 — Package Hallucination](vulnerabilities/v2-package-hallucination/reference.md)
+- [V3 — Client-Side Security Misplacements](vulnerabilities/v3-client-side-misplacement/reference.md)
+- [V4 — Disabled Data Isolation](vulnerabilities/v4-disabled-data-isolation/reference.md)
+- [V5 — Missing Input Validation](vulnerabilities/v5-missing-input-validation/reference.md)
+- [V6 — Baking Secrets into Source](vulnerabilities/v6-baking-secrets/reference.md)
+- [V7 — AI Default Credentials](vulnerabilities/v7-ai-default-credentials/reference.md)
+- [V8 — Flawed Object Authorization](vulnerabilities/v8-flawed-object-authorization/reference.md)
+- [V9 — Denial of Wallet & Rate-Limiting](vulnerabilities/v9-denial-of-wallet/reference.md)
+- [V10 — CORS & IAM Perimeter Dissolution](vulnerabilities/v10-cors-iam-perimeter/reference.md)
+- [V11 — Structural Type Enforcement](vulnerabilities/v11-structural-type-enforcement/reference.md)
+
 ## Great References
 
 https://www.sherlockforensics.com/blog/security-prompts-every-vibe-coder-needs.html

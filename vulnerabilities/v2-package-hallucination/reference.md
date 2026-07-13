@@ -52,3 +52,7 @@ flowchart TD
     style LockJson color:#000000, fill:#E0F2F1, stroke:#B2DFDB
     style DFile color:#000000, fill:#EFFFDE, stroke:#C5E1A5
 ```
+
+---
+
+[<-- Back to full guide: Readme.md](../../Readme.md)

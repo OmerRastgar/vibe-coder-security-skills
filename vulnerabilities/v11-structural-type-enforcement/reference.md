@@ -62,3 +62,7 @@ flowchart TD
     style DictUnpacking color:#000000, fill:#FFF3E0, stroke:#FFE0B2
     style LooseMaps color:#000000, fill:#F3E5F5, stroke:#E1BEE7
 ```
+
+---
+
+[<-- Back to full guide: Readme.md](../../Readme.md)

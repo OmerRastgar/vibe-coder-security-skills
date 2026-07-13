@@ -58,3 +58,7 @@ flowchart TD
     style GlobalIndex color:#000000, fill:#F3E5F5, stroke:#E1BEE7
     style PublicRules color:#000000, fill:#E1F5FE, stroke:#B3E5FC
 ```
+
+---
+
+[<-- Back to full guide: Readme.md](../../Readme.md)

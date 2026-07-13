@@ -53,3 +53,7 @@ flowchart TD
     style AWS color:#000000, fill:#E0E0E0, stroke:#B0B0B0
     style Kube color:#000000, fill:#E0E0E0, stroke:#B0B0B0
 ```
+
+---
+
+[<-- Back to full guide: Readme.md](../../Readme.md)

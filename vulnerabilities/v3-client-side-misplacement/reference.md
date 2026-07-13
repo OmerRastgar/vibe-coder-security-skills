@@ -58,3 +58,7 @@ flowchart TD
     style FormFields color:#000000, fill:#F1F8E9, stroke:#DCEDC8
     style APIPayloads color:#000000, fill:#FFF3E0, stroke:#FFE0B2
 ```
+
+---
+
+[<-- Back to full guide: Readme.md](../../Readme.md)
