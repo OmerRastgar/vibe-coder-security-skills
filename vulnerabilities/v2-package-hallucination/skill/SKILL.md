@@ -32,29 +32,24 @@ Audit ALL four artifact classes; correlate manifests against actual code imports
 - Imports / requires: `.js`/`.ts` (`import`/`require`), `.py` (`import`/`from`), `.go`, `.rs`, `.rb`
 - Flag imports present in code but MISSING from any manifest (unlisted packages).
 
-## How to run the scanner (preferred)
+## How to run the scanner
 
-This skill ships executable scanners. They parse manifests + source, then flag:
-- **Typosquat candidates** — declared packages within edit-distance 2 of a known-real package (e.g., `reqeusts` vs `requests`).
-- **AI-hallucination names** — generic descriptive names from the known hallucination list (e.g., `python-string-utils`, `react-native-simple-auth-handler`).
-- **Unlisted imports** — packages imported in code but absent from the matching ecosystem manifest.
+Copy the `skill/` folder from this vulnerability into `.commandcode/skills/` in your project, then run:
 
 **Python (cross-platform):**
 ```
-python vulnerabilities/v2-package-hallucination/scripts/scan.py --target <repo>
-python vulnerabilities/v2-package-hallucination/scripts/scan.py --target <repo> --json
+python .commandcode/skills/package-hallucination-audit/scripts/scan.py --target <repo>
+python .commandcode/skills/package-hallucination-audit/scripts/scan.py --target <repo> --json
 ```
 
 **PowerShell (Windows, no Python needed):**
 ```
-powershell.exe vulnerabilities/v2-package-hallucination/scripts/scan.ps1 -Target <repo>
-powershell.exe vulnerabilities/v2-package-hallucination/scripts/scan.ps1 -Target <repo> -Json
+powershell.exe .commandcode/skills/package-hallucination-audit/scripts/scan.ps1 -Target <repo>
+powershell.exe .commandcode/skills/package-hallucination-audit/scripts/scan.ps1 -Target <repo> -Json
 ```
 
 - Patterns, known-real package lists, and source globs come from `config.yml` — edit to add packages or heuristics.
 - The scanner cannot query live registries; it flags *suspicious* packages for you to verify (e.g., `npm view <pkg>` / `pip index versions <pkg>`).
-
-Then manually verify each flag against the live registry before concluding it is malicious.
 
 ## Constraints
 
@@ -83,11 +78,7 @@ Then manually verify each flag against the live registry before concluding it is
   2. If hallucinated, remove from manifest and use the intended library.
   3. Purge caches (`npm cache clean`, `pip cache purge`).
 
-## Companion assets
+## Reference
 
-- `config.yml` — manifests, known-real packages, AI-hallucination name list, and heuristics the scripts use.
-- `scripts/scan.py` — Python scanner (manifests + imports + heuristics), no third-party deps.
-- `scripts/scan.ps1` — native PowerShell scanner (same coverage, no Python needed).
-- `detail.md` — one-paragraph plain-language description.
-- `prompt.md` — the full copy-paste audit prompt.
-- `flowchart.md` — Mermaid diagram of the package-hallucination attack surface.
+See `reference.md` for the full vulnerability description and attack surface flowchart.
+See `prompt.md` for the copy-paste LLM audit prompt.
