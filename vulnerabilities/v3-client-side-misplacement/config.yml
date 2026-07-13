@@ -1,0 +1,123 @@
+# Client-Side Security Misplacement audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+# Patterns are matched against frontend source files only (see source_extensions).
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git
+  - dist
+  - build
+  - out
+  - .next
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+  - .nuxt
+  - .output
+
+# File extensions to scan (frontend source)
+source_extensions:
+  - ".js"
+  - ".jsx"
+  - ".ts"
+  - ".tsx"
+  - ".vue"
+  - ".svelte"
+  - ".mjs"
+
+# -----------------------------------------------------------------------
+# Pattern groups — each entry has:
+#   name     : human label
+#   regex    : pattern matched against each source line (case-insensitive)
+#   category : maps to the three flowchart attack surfaces
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- Auth & Access ------------------------------------------------
+
+  - name: "Client-Side JWT Decode"
+    regex: 'jwt[_-]?decode|jwtDecode|parseJwt|atob\s*\('
+    category: "Auth & Access"
+    severity: "high"
+    note: "JWT decoded client-side. Roles/claims read here must also be verified server-side on every protected request."
+
+  - name: "localStorage Role / Privilege Read"
+    regex: 'localStorage\.getItem\s*\(.*role|localStorage\.getItem\s*\(.*admin|localStorage\.getItem\s*\(.*permission|localStorage\.getItem\s*\(.*isAdmin|localStorage\.getItem\s*\(.*plan'
+    category: "Auth & Access"
+    severity: "high"
+    note: "Role or privilege read from localStorage. This is attacker-controlled storage; enforce the role server-side."
+
+  - name: "sessionStorage Role / Privilege Read"
+    regex: 'sessionStorage\.getItem\s*\(.*role|sessionStorage\.getItem\s*\(.*admin|sessionStorage\.getItem\s*\(.*isAdmin|sessionStorage\.getItem\s*\(.*permission'
+    category: "Auth & Access"
+    severity: "high"
+    note: "Role or privilege read from sessionStorage. Enforce server-side."
+
+  - name: "Client-Side Route Guard"
+    regex: 'PrivateRoute|ProtectedRoute|AuthGuard|RequireAuth|canActivate|NavigationGuard'
+    category: "Auth & Access"
+    severity: "high"
+    note: "Route guard using client state. Guards only affect navigation; the underlying API endpoints must also enforce auth."
+
+  - name: "Conditional Render as Access Control"
+    regex: 'v-if=.*isAdmin|ng-if=.*role|&&\s*<.*Admin|isAdmin\s*&&|isPremium\s*&&|hasPermission\s*&&|featureEnabled\s*&&'
+    category: "Auth & Access"
+    severity: "medium"
+    note: "Conditional render based on role/feature. Hiding UI does not protect the API route — enforce on the server too."
+
+  - name: "Client-Side Feature Flag Gate"
+    regex: 'featureFlag.*premium|isEnabled.*paid|getFlag.*pro|variation.*enterprise|useFlag.*admin|useLDClient.*paid'
+    category: "Auth & Access"
+    severity: "high"
+    note: "Feature gated only by a client-side flag. The backing API endpoint must independently enforce entitlement."
+
+  # ---- Forms & Inputs ----------------------------------------------
+
+  - name: "Client-Only File Type Check"
+    regex: 'file\.type\s*===|file\.type\s*!==|fileType\s*===|mimeType\s*===|\.endsWith\s*\(\s*[''"].jpg|\.endsWith\s*\(\s*[''"].png|\.endsWith\s*\(\s*[''"].pdf'
+    category: "Forms & Inputs"
+    severity: "high"
+    note: "File type validated only in the browser. Magic-byte / MIME validation must be repeated on the server."
+
+  - name: "HTML Input max/min Only"
+    regex: '<input[^>]*\smax=|<input[^>]*\smin=|<input[^>]*\smaxlength=|<input[^>]*\sminlength='
+    category: "Forms & Inputs"
+    severity: "medium"
+    note: "Input bounds set only via HTML attributes. These are trivially bypassed; add server-side schema validation."
+
+  - name: "Client-Side Quantity / Price Cap"
+    regex: 'Math\.min\s*\(.*quantity|Math\.max\s*\(.*quantity|Math\.min\s*\(.*price|Math\.max\s*\(.*amount'
+    category: "Forms & Inputs"
+    severity: "medium"
+    note: "Numeric cap applied in the browser. The backend must re-validate the range before processing."
+
+  # ---- Data Flow & Math -------------------------------------------
+
+  - name: "Client-Calculated Total / Price Sent to API"
+    regex: 'total\s*=.*quantity.*price|subtotal\s*=.*qty|grandTotal\s*=|finalPrice\s*=|orderTotal\s*=|price\s*\*\s*quantity'
+    category: "Data Flow & Math"
+    severity: "high"
+    note: "Price or total calculated client-side and likely submitted to the API. Recalculate and authorise server-side."
+
+  - name: "Discount Applied Client-Side"
+    regex: 'discount\s*\*\s*price|price\s*\*.*discount|couponDiscount\s*=|promoDiscount\s*=|applyDiscount\s*\('
+    category: "Data Flow & Math"
+    severity: "high"
+    note: "Discount logic runs in the browser. Any discount must be validated and applied server-side before charging."
+
+  - name: "UI Data Masking (send then hide)"
+    regex: 'display:\s*none.*password|display:\s*none.*secret|display:\s*none.*token|visibility:\s*hidden.*card|v-show=.*false.*cvv|classList.*hidden.*salary'
+    category: "Data Flow & Math"
+    severity: "medium"
+    note: "Sensitive field hidden via CSS/class. The data was still sent to the client; filter it out of the API response instead."
+
+  - name: "Local Game / App State Trusted by Server"
+    regex: 'localStorage.*score|localStorage.*balance|localStorage.*coins|localStorage.*inventory|sessionStorage.*level|useState.*score|useState.*balance'
+    category: "Data Flow & Math"
+    severity: "medium"
+    note: "Game or app state stored client-side and likely submitted back. The server must own the authoritative state."
