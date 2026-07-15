@@ -39,12 +39,12 @@ A Dockerized Nuclei scan server is included at the project root:
 docker compose up nuclei-scanner --build
 
 # Scan a live URL for specific vulnerabilities
-curl -X POST http://localhost:5000/scan \
+curl -X POST http://localhost:8080/scan \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://your-app.com", "vulnerabilities": ["v3", "v7", "v10"]}'
 
 # Scan for all 11
-curl -X POST http://localhost:5000/scan \
+curl -X POST http://localhost:8080/scan \
   -H 'Content-Type: application/json' \
   -d '{"url": "https://your-app.com"}'
 ```
@@ -83,17 +83,17 @@ docker compose run --rm -v $(pwd)/my-project:/mnt/code sast-scanner
 docker compose up --build
 
 # Health checks
-curl http://localhost:5000/health   # Nuclei DAST
+curl http://localhost:8080/health   # Nuclei DAST
 curl http://localhost:5001/health   # SAST tools
 
 # List available vulnerabilities and their template counts
-curl http://localhost:5000/templates
+curl http://localhost:8080/templates
 curl http://localhost:5001/templates
 ```
 
 | Service | Port | Purpose |
 |---------|------|---------|
-| `nuclei-scanner` | `5000` | Accepts a URL, probes live targets with Nuclei templates |
+| `nuclei-scanner` | `8080` | Accepts a URL, probes live targets with Nuclei templates |
 | `sast-scanner` | `5001` | Accepts a mounted code directory, runs Semgrep/TruffleHog/Checkov |
 
 ## Repository Structure
