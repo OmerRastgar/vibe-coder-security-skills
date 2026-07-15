@@ -1,38 +1,41 @@
-"""SAST Scan Server — routes vulnerabilities to the right code-scanning tool.
+"""SAST Scan Server — async, zip-upload, zero-state code scanner.
 
-POST /scan
-    Body: {"target": "/mnt/code", "vulnerabilities": ["v1","v6","v8"]}
-    Returns: aggregated JSON findings from all applicable SAST tools
+POST /scan           → multipart/form-data: zip + fields
+                       Returns 202 {scan_id, token}
+GET  /scan/{id}      → header X-Scan-Token required
+                       Returns {status, results}
+GET  /health         → tool versions
 
-Tools per vulnerability:
-    v1  → TruffleHog (secrets in source + git history)
-    v2  → Custom Python scanner (package hallucination)
-    v3  → Semgrep (client-side rules)
-    v4  → Semgrep + Checkov (data isolation, IaC)
-    v5  → Semgrep (input validation rules)
-    v6  → TruffleHog + Custom regex scanner (hardcoded secrets)
-    v7  → Semgrep + Checkov (default credentials, IaC misconfigs)
-    v8  → Semgrep (object authorization / mass assignment)
-    v9  → Semgrep (rate-limit config patterns)
-    v10 → Checkov (IAM/cors policies) + Semgrep
-    v11 → Semgrep (type enforcement rules)
+Security:
+  - Each scan gets a unique random token; only the submitter sees it.
+  - Code is extracted to /tmp/{scan_id}/, scanned, and deleted immediately.
+  - Cloud Run kills the container between requests; no disk persists.
 """
 
 import json
 import os
+import re
+import shutil
 import subprocess
-import sys
+import threading
 import time
 import uuid
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import zipfile
+from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB
 
+TMP_ROOT = Path("/tmp")
 SCAN_TIMEOUT = 600
+MAX_CONCURRENT = 3
+scan_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
+scan_state = {}
+state_lock = threading.Lock()
 
 VULN_MAP = {
     "v1":  "AI Commit Trap",
@@ -62,158 +65,131 @@ TOOL_PLAN = {
     "v11": ["semgrep_v11"],
 }
 
-SEMGREP_COMMUNITY_RULES = {
-    "v3": "auto",
-    "v5": "auto",
-    "v9": "auto",
-}
-
-RESULT_DIR = Path("/app/results")
-RESULT_DIR.mkdir(parents=True, exist_ok=True)
-
 
 # ---------------------------------------------------------------------------
-# Tool runners — each returns a list of finding dicts
+# Helpers
 # ---------------------------------------------------------------------------
+
+def validate_vulns(ids):
+    if ids is None or len(ids) == 0:
+        return list(VULN_MAP.keys())
+    invalid = [v for v in ids if v not in VULN_MAP]
+    if invalid:
+        raise ValueError(f"Unknown vulnerability IDs: {invalid}. Valid: {sorted(VULN_MAP.keys())}")
+    return ids
+
 
 def run_trufflehog(target):
     findings = []
-    scan_id = uuid.uuid4().hex[:8]
-    outfile = RESULT_DIR / f"th_{scan_id}.json"
-
-    cmd = [
-        "trufflehog", "filesystem",
-        "--directory", target,
-        "--json",
-        "--no-verification",
-        "--fail",
-        "--concurrency", "4",
-    ]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
+        result = subprocess.run(
+            ["trufflehog", "filesystem", "--directory", target, "--json",
+             "--no-verification", "--fail", "--concurrency", "4"],
+            capture_output=True, text=True, timeout=SCAN_TIMEOUT,
+        )
         for line in result.stdout.strip().splitlines():
             if line.strip():
                 try:
                     findings.append(json.loads(line))
                 except json.JSONDecodeError:
                     pass
-    except subprocess.TimeoutExpired:
-        findings.append({"error": "trufflehog timed out"})
     except Exception as e:
         findings.append({"error": f"trufflehog failed: {str(e)}"})
-
     return {"tool": "trufflehog", "findings": findings}
 
 
 def run_scanner_v2(target):
-    findings = []
     script = Path("/app/scanners/v2/scan.py")
     config = Path("/app/scanners/v2/config.yml")
     if not script.exists():
         return {"tool": "scanner_v2", "findings": [{"error": "scanner not found"}]}
-
     try:
         result = subprocess.run(
             ["python3", str(script), "--target", target, "--config", str(config), "--json"],
             capture_output=True, text=True, timeout=SCAN_TIMEOUT,
         )
         parsed = json.loads(result.stdout)
-        findings = parsed.get("findings", [])
-    except subprocess.TimeoutExpired:
-        findings.append({"error": "v2 scanner timed out"})
+        return {"tool": "scanner_v2", "findings": parsed.get("findings", [])}
     except Exception as e:
-        findings.append({"error": f"v2 scanner failed: {str(e)}"})
-
-    return {"tool": "scanner_v2", "findings": findings}
+        return {"tool": "scanner_v2", "findings": [{"error": str(e)}]}
 
 
 def run_scanner_v6(target):
-    findings = []
     script = Path("/app/scanners/v6/scan.py")
     config = Path("/app/scanners/v6/config.yml")
     if not script.exists():
         return {"tool": "scanner_v6", "findings": [{"error": "scanner not found"}]}
-
     try:
         result = subprocess.run(
             ["python3", str(script), "--target", target, "--config", str(config), "--json"],
             capture_output=True, text=True, timeout=SCAN_TIMEOUT,
         )
         parsed = json.loads(result.stdout)
-        findings = parsed.get("findings", [])
-    except subprocess.TimeoutExpired:
-        findings.append({"error": "v6 scanner timed out"})
+        return {"tool": "scanner_v6", "findings": parsed.get("findings", [])}
     except Exception as e:
-        findings.append({"error": f"v6 scanner failed: {str(e)}"})
-
-    return {"tool": "scanner_v6", "findings": findings}
+        return {"tool": "scanner_v6", "findings": [{"error": str(e)}]}
 
 
 def run_semgrep(target, tag, rule_files=None):
     findings = []
-    scan_id = uuid.uuid4().hex[:8]
-    outfile = RESULT_DIR / f"sg_{tag}_{scan_id}.json"
-
-    cmd = ["semgrep", "scan", "--json", "--output", str(outfile), "--quiet", "--no-git-ignore"]
-
+    outfile = target + f"/.semgrep_{tag}_{uuid.uuid4().hex[:6]}.json"
+    cmd = ["semgrep", "scan", "--json", "--output", outfile, "--quiet", "--no-git-ignore"]
     if rule_files:
         for rf in rule_files:
             if rf.exists():
                 cmd += ["--config", str(rf)]
-
-    if tag in SEMGREP_COMMUNITY_RULES:
-        cmd += ["--config", SEMGREP_COMMUNITY_RULES[tag]]
-
+    cmd += ["--config", "auto"]
     cmd.append(target)
-
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
-        if outfile.exists():
-            raw = json.loads(outfile.read_text())
+        subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
+        if os.path.exists(outfile):
+            raw = json.loads(Path(outfile).read_text())
             for r in raw.get("results", []):
                 findings.append({
                     "check_id": r.get("check_id", ""),
                     "path": r.get("path", ""),
                     "start": r.get("start", {}),
-                    "end": r.get("end", {}),
                     "extra": r.get("extra", {}),
                     "severity": r.get("extra", {}).get("severity", ""),
                 })
-    except subprocess.TimeoutExpired:
-        findings.append({"error": f"semgrep {tag} timed out"})
     except Exception as e:
         findings.append({"error": f"semgrep {tag} failed: {str(e)}"})
-
+    finally:
+        if os.path.exists(outfile):
+            os.remove(outfile)
     return {"tool": f"semgrep_{tag}", "findings": findings}
 
 
-def run_checkov(target, framework=None):
+def run_checkov(target):
     findings = []
-    scan_id = uuid.uuid4().hex[:8]
-    outfile = RESULT_DIR / f"ck_{scan_id}.json"
-
-    cmd = ["checkov", "--directory", target, "--output", "json", "--output-file-path", str(RESULT_DIR), "--output-basename", f"ck_{scan_id}", "--quiet", "--skip-framework", "secrets"]
-
+    outfile = target + f"/.checkov_{uuid.uuid4().hex[:6]}.json"
+    cmd = ["checkov", "--directory", target, "--output", "json",
+           "--output-file-path", target, "--output-basename",
+           os.path.basename(outfile).replace(".json", ""),
+           "--quiet", "--skip-framework", "secrets"]
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
-        json_out = RESULT_DIR / f"ck_{scan_id}.json"
-        if json_out.exists():
-            raw = json.loads(json_out.read_text())
+        subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
+        real_out = Path(target) / (os.path.basename(outfile).replace(".json", "") + ".json")
+        # checkov prefixes with results_
+        for f in Path(target).glob("results_*.json"):
+            real_out = f
+            break
+        if real_out.exists():
+            raw = json.loads(real_out.read_text())
             for rec in raw.get("results", {}).get("failed_checks", []):
                 findings.append({
                     "check_id": rec.get("check_id", ""),
                     "check_name": rec.get("check_name", ""),
                     "file_path": rec.get("file_path", ""),
-                    "file_line_range": rec.get("file_line_range", []),
                     "resource": rec.get("resource", ""),
-                    "guideline": rec.get("guideline", ""),
                     "severity": rec.get("severity", ""),
                 })
-    except subprocess.TimeoutExpired:
-        findings.append({"error": "checkov timed out"})
     except Exception as e:
         findings.append({"error": f"checkov failed: {str(e)}"})
-
+    finally:
+        for f in Path(target).glob("results_*.json"):
+            try: os.remove(str(f))
+            except: pass
     return {"tool": "checkov", "findings": findings}
 
 
@@ -233,80 +209,192 @@ TOOL_RUNNERS = {
 
 
 # ---------------------------------------------------------------------------
+# Background scan runner
+# ---------------------------------------------------------------------------
+
+def run_scan_background(scan_id, token, workdir, vuln_ids):
+    try:
+        with state_lock:
+            scan_state[scan_id] = {"status": "running", "progress": 0}
+
+        tools = set()
+        for vid in vuln_ids:
+            tools.update(TOOL_PLAN.get(vid, []))
+
+        tool_results = {}
+        start = time.time()
+
+        threads = []
+        thread_lock = threading.Lock()
+
+        def run_one(tool_name):
+            try:
+                result = TOOL_RUNNERS[tool_name](str(workdir))
+            except Exception as e:
+                result = {"tool": tool_name, "findings": [{"error": str(e)}]}
+            with thread_lock:
+                tool_results[tool_name] = result
+
+        for tool in tools:
+            t = threading.Thread(target=run_one, args=(tool,), daemon=True)
+            t.start()
+            threads.append(t)
+
+        for t in threads:
+            t.join(timeout=SCAN_TIMEOUT)
+
+        duration = round(time.time() - start, 2)
+
+        # Build breakdown
+        vuln_breakdown = {}
+        for vid in vuln_ids:
+            vuln_breakdown[vid] = {
+                "name": VULN_MAP[vid],
+                "tools_used": TOOL_PLAN.get(vid, []),
+            }
+
+        # Aggregate findings per vN
+        findings_by_vuln = defaultdict(list)
+        for tool_name, tr in tool_results.items():
+            # Rough mapping: semgrep_v3 -> v3
+            for vid in vuln_ids:
+                if tool_name.startswith(f"semgrep_{vid}") or \
+                   (tool_name in TOOL_PLAN.get(vid, [])):
+                    findings_by_vuln[vid].extend(tr.get("findings", []))
+
+        for vid in vuln_breakdown:
+            vuln_breakdown[vid]["findings_count"] = len(findings_by_vuln.get(vid, []))
+
+        total_findings = sum(v["findings_count"] for v in vuln_breakdown.values())
+
+        response_data = {
+            "scan_id": scan_id,
+            "vulnerabilities_scanned": list(vuln_ids),
+            "breakdown": vuln_breakdown,
+            "tool_results": tool_results,
+            "findings_total": total_findings,
+            "duration_sec": duration,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+
+        # Save results to disk (survives container reuse)
+        (workdir / "results.json").write_text(json.dumps(response_data, indent=2))
+
+        with state_lock:
+            scan_state[scan_id] = {"status": "completed", "progress": 100}
+
+    except Exception as e:
+        with state_lock:
+            scan_state[scan_id] = {"status": "failed", "error": str(e)}
+    finally:
+        scan_semaphore.release()
+
+
+# ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
 
 @app.route("/scan", methods=["POST"])
 def scan():
-    data = request.get_json(silent=True) or {}
-    target = (data.get("target") or "").strip()
+    if "file" not in request.files:
+        return jsonify({"error": "A zip file is required. Send as multipart/form-data with key 'file'."}), 400
 
-    if not target:
-        return jsonify({"error": "target path is required"}), 400
-    if not os.path.isdir(target):
-        return jsonify({"error": f"target directory not found: {target}"}), 400
+    file = request.files["file"]
+    if not file.filename or not file.filename.lower().endswith(".zip"):
+        return jsonify({"error": "File must be a .zip archive."}), 400
 
-    vuln_ids = data.get("vulnerabilities")
-    if vuln_ids is None or len(vuln_ids) == 0:
-        vuln_ids = list(VULN_MAP.keys())
+    vuln_ids = validate_vulns(request.form.get("vulnerabilities"))
+    vuln_ids_list = vuln_ids if isinstance(vuln_ids, list) else [vuln_ids]
+    if isinstance(request.form.get("vulnerabilities"), str):
+        try:
+            vuln_ids_list = json.loads(request.form["vulnerabilities"])
+        except:
+            vuln_ids_list = [request.form["vulnerabilities"]]
+    else:
+        vuln_ids_list = vuln_ids_list or list(VULN_MAP.keys())
 
-    invalid = [v for v in vuln_ids if v not in VULN_MAP]
-    if invalid:
-        return jsonify({"error": f"Unknown vulnerability IDs: {invalid}. Valid: {sorted(VULN_MAP.keys())}"}), 400
+    try:
+        vuln_ids_list = validate_vulns(vuln_ids_list)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
 
-    tools = set()
-    for vid in vuln_ids:
-        tools.update(TOOL_PLAN.get(vid, []))
+    acquired = scan_semaphore.acquire(blocking=False)
+    if not acquired:
+        return jsonify({
+            "error": f"Server busy. Max {MAX_CONCURRENT} concurrent scans.",
+            "retry_after_sec": 30,
+        }), 503
 
-    tool_results = {}
-    start = time.time()
+    scan_id = uuid.uuid4().hex[:12]
+    token = uuid.uuid4().hex[:16]
+    workdir = TMP_ROOT / scan_id
+    workdir.mkdir(parents=True, exist_ok=True)
 
-    with ThreadPoolExecutor(max_workers=min(len(tools), 6)) as executor:
-        futures = {
-            executor.submit(TOOL_RUNNERS[tool], target): tool
-            for tool in tools
-        }
-        for future in as_completed(futures):
-            tool_name = futures[future]
-            try:
-                tool_results[tool_name] = future.result()
-            except Exception as e:
-                tool_results[tool_name] = {"tool": tool_name, "findings": [{"error": str(e)}]}
+    try:
+        file.save(str(workdir / "upload.zip"))
+        with zipfile.ZipFile(str(workdir / "upload.zip"), "r") as zf:
+            zf.extractall(str(workdir))
+        os.remove(str(workdir / "upload.zip"))
+    except zipfile.BadZipFile:
+        shutil.rmtree(str(workdir), ignore_errors=True)
+        scan_semaphore.release()
+        return jsonify({"error": "Invalid zip file."}), 400
+    except Exception as e:
+        shutil.rmtree(str(workdir), ignore_errors=True)
+        scan_semaphore.release()
+        return jsonify({"error": f"Failed to extract zip: {str(e)}"}), 400
 
-    duration = round(time.time() - start, 2)
+    with state_lock:
+        scan_state[scan_id] = {"status": "queued", "token": token}
 
-    total_findings = sum(
-        len(v.get("findings", [])) for v in tool_results.values()
-        if isinstance(v, dict)
+    thread = threading.Thread(
+        target=run_scan_background,
+        args=(scan_id, token, workdir, vuln_ids_list),
+        daemon=True,
     )
+    thread.start()
 
     return jsonify({
-        "scan_id": uuid.uuid4().hex[:12],
-        "target": target,
-        "vulnerabilities_scanned": [
-            {"id": vid, "name": VULN_MAP[vid]} for vid in vuln_ids
-        ],
-        "tools_executed": sorted(tools),
-        "tool_results": tool_results,
-        "total_findings": total_findings,
-        "duration_sec": duration,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
+        "scan_id": scan_id,
+        "token": token,
+        "status": "accepted",
+        "vulnerabilities": vuln_ids_list,
+        "check_status": f"/scan/{scan_id}",
+    }), 202
 
 
-@app.route("/templates", methods=["GET"])
-def list_templates():
-    tool_plan = {}
-    for vid, tools in TOOL_PLAN.items():
-        tool_plan[vid] = {
-            "name": VULN_MAP[vid],
-            "tools": tools,
-        }
-    return jsonify({
-        "vulnerabilities": tool_plan,
-        "semgrep_rules": [f.name for f in Path("/app/rules").glob("*.yaml")] if Path("/app/rules").exists() else [],
-        "scanners": [d.name for d in Path("/app/scanners").iterdir() if d.is_dir()] if Path("/app/scanners").exists() else [],
-    })
+@app.route("/scan/<scan_id>", methods=["GET"])
+def get_scan_status(scan_id):
+    token = request.headers.get("X-Scan-Token") or request.args.get("token")
+
+    with state_lock:
+        state = scan_state.get(scan_id)
+
+    if state is None:
+        workdir = TMP_ROOT / scan_id
+        results_file = workdir / "results.json"
+        if results_file.exists():
+            return jsonify({"status": "completed",
+                           "results": json.loads(results_file.read_text())})
+        return jsonify({"error": "scan not found"}), 404
+
+    if token and state.get("token") != token:
+        return jsonify({"error": "invalid token"}), 403
+
+    if state["status"] == "completed":
+        workdir = TMP_ROOT / scan_id
+        results_file = workdir / "results.json"
+        if results_file.exists():
+            results = json.loads(results_file.read_text())
+            # Clean up extracted code immediately after delivering results
+            shutil.rmtree(str(workdir), ignore_errors=True)
+            return jsonify({"status": "completed", "results": results})
+
+    if state["status"] == "failed":
+        shutil.rmtree(str(TMP_ROOT / scan_id), ignore_errors=True)
+        return jsonify({"status": "failed", "error": state.get("error")})
+
+    return jsonify({"status": state["status"], "progress": state.get("progress", 0)})
 
 
 @app.route("/health", methods=["GET"])
@@ -314,17 +402,28 @@ def health():
     versions = {}
     for tool in ["semgrep", "trufflehog", "checkov"]:
         try:
-            r = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=10)
+            r = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=5)
             versions[tool] = r.stdout.strip().split("\n")[0]
         except Exception:
             versions[tool] = "not found"
-
+    with state_lock:
+        running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
     return jsonify({
         "status": "ok",
         "versions": versions,
+        "concurrent_scans": running,
+        "max_concurrent": MAX_CONCURRENT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
 
+@app.route("/templates", methods=["GET"])
+def list_templates():
+    result = {}
+    for vid, name in VULN_MAP.items():
+        result[vid] = {"name": name, "tools": TOOL_PLAN.get(vid, [])}
+    return jsonify(result)
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5001)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5001)))

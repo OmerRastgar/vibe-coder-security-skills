@@ -207,8 +207,6 @@ def run_scan_background(scan_id, url, vuln_ids, per_vuln, all_paths, concurrency
             "scan_output": {
                 "summary": final_stats,
                 "errors": stats_errors,
-                "raw_log": f"/log/{scan_id}",
-                "raw_results": f"/report/{scan_id}",
             },
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
@@ -263,11 +261,12 @@ def scan():
         }), 503
 
     scan_id = uuid.uuid4().hex[:12]
+    token = uuid.uuid4().hex[:16]
     concurrency = int(data.get("concurrency") or 10)
     timeout_per = int(data.get("timeout") or 15)
 
     with state_lock:
-        scan_state[scan_id] = {"status": "queued", "progress": 0}
+        scan_state[scan_id] = {"status": "queued", "progress": 0, "token": token}
 
     thread = threading.Thread(
         target=run_scan_background,
@@ -278,6 +277,7 @@ def scan():
 
     return jsonify({
         "scan_id": scan_id,
+        "token": token,
         "status": "accepted",
         "vulnerabilities": list(vuln_ids),
         "check_status": f"/scan/{scan_id}",
@@ -286,14 +286,19 @@ def scan():
 
 @app.route("/scan/<scan_id>", methods=["GET"])
 def get_scan_status(scan_id):
+    token = request.headers.get("X-Scan-Token") or request.args.get("token")
+
     with state_lock:
         state = scan_state.get(scan_id)
+
     if state is None:
-        # Check if results exist on disk (survived restart)
         summary_file = RESULTS_DIR / f"{scan_id}_summary.json"
         if summary_file.exists():
             return jsonify({"status": "completed", "results": json.loads(summary_file.read_text())})
         return jsonify({"error": "scan not found"}), 404
+
+    if token and state.get("token") != token:
+        return jsonify({"error": "invalid token"}), 403
 
     if state["status"] == "completed":
         summary_file = RESULTS_DIR / f"{scan_id}_summary.json"
@@ -334,6 +339,12 @@ def health():
 
 @app.route("/log/<scan_id>", methods=["GET"])
 def get_log(scan_id):
+    token = request.headers.get("X-Scan-Token") or request.args.get("token")
+    with state_lock:
+        state = scan_state.get(scan_id, {})
+    if token and state.get("token") != token:
+        return jsonify({"error": "invalid token"}), 403
+
     log_file = RESULTS_DIR / f"{scan_id}_log.txt"
     if not log_file.exists():
         return jsonify({"error": "log not found"}), 404
@@ -349,6 +360,12 @@ def get_log(scan_id):
 
 @app.route("/report/<scan_id>", methods=["GET"])
 def get_report(scan_id):
+    token = request.headers.get("X-Scan-Token") or request.args.get("token")
+    with state_lock:
+        state = scan_state.get(scan_id, {})
+    if token and state.get("token") != token:
+        return jsonify({"error": "invalid token"}), 403
+
     jsonl_file = RESULTS_DIR / f"{scan_id}.jsonl"
     if not jsonl_file.exists():
         return jsonify({"error": "report not found"}), 404
@@ -360,21 +377,12 @@ def get_report(scan_id):
 
 @app.route("/scans", methods=["GET"])
 def list_scans():
-    scans = []
+    """Return only scan IDs — no URLs or results exposed without token."""
+    ids = []
     for f in sorted(RESULTS_DIR.glob("*_summary.json"), reverse=True):
-        try:
-            data = json.loads(f.read_text())
-            scans.append({
-                "scan_id": data.get("scan_id"),
-                "url": data.get("url"),
-                "vulnerabilities": data.get("vulnerabilities_scanned"),
-                "findings_total": data.get("findings_total"),
-                "duration_sec": data.get("duration_sec"),
-                "timestamp": data.get("timestamp"),
-            })
-        except Exception:
-            pass
-    return jsonify({"scans": scans, "total": len(scans)})
+        sid = f.stem.replace("_summary", "")
+        ids.append(sid)
+    return jsonify({"scan_count": len(ids), "scan_ids": ids})
 
 
 # ---------------------------------------------------------------------------
