@@ -1,0 +1,176 @@
+# Baking Secrets into Source — audit configuration
+# Consumed by scripts/scan.py and scripts/scan.ps1
+
+# Directories to skip
+exclude_patterns:
+  - node_modules
+  - .git/objects
+  - dist
+  - build
+  - __pycache__
+  - .venv
+  - venv
+  - vendor
+  - coverage
+
+# File extensions to scan
+source_extensions:
+  - ".py"
+  - ".js"
+  - ".ts"
+  - ".mjs"
+  - ".go"
+  - ".java"
+  - ".cs"
+  - ".rb"
+  - ".php"
+  - ".env"
+  - ".yml"
+  - ".yaml"
+  - ".json"
+  - ".toml"
+  - ".tf"
+  - ".hcl"
+  - ".xml"
+  - ".conf"
+  - ".cfg"
+  - ".ini"
+  - ".properties"
+
+# Sensitive filenames that should never be committed with real values
+sensitive_filenames:
+  - ".env"
+  - ".env.local"
+  - ".env.example"
+  - ".env.sample"
+  - ".env.development"
+  - ".env.production"
+  - ".npmrc"
+  - "pip.conf"
+  - "cargo/config"
+  - "kubeconfig"
+  - "kubeconfig.yaml"
+  - ".kube/config"
+  - "id_rsa"
+  - "id_ed25519"
+  - "*.pem"
+  - "*.key"
+  - "*.p12"
+  - "*.pfx"
+  - "terraform.tfstate"
+  - "*.tfvars"
+  - "docker-compose.yml"
+  - "application.yml"
+  - "application.properties"
+  - "settings.py"
+
+# Mask all but first 4 and last 4 chars of any matched secret value
+mask_secret: true
+
+# -----------------------------------------------------------------------
+# Regex patterns for secret detection
+#   name     : human label
+#   regex    : matched case-insensitively against each source line
+#   category : Inline Code | Dev Boilerplate | Cloud & Infra | VCS Leak
+#   severity : high | medium
+#   note     : short guidance shown in output
+# -----------------------------------------------------------------------
+patterns:
+
+  # ---- Inline Code --------------------------------------------------
+
+  - name: "OpenAI API Key"
+    regex: 'sk-(proj-)?[A-Za-z0-9_\-]{20,}'
+    category: "Inline Code"
+    severity: "high"
+    note: "OpenAI API key found in source. Move to environment variable and rotate immediately."
+
+  - name: "Stripe Live Secret Key"
+    regex: 'sk_live_[0-9a-zA-Z]{24,}'
+    category: "Inline Code"
+    severity: "high"
+    note: "Stripe live secret key in source. Revoke and replace with an env var reference."
+
+  - name: "Google API Key"
+    regex: 'AIza[0-9A-Za-z_\-]{35}'
+    category: "Inline Code"
+    severity: "high"
+    note: "Google API key found. Rotate and store in a secrets manager."
+
+  - name: "Generic Secret Assignment"
+    regex: '(?:password|passwd|pwd|secret|token|api[_\-]?key|access[_\-]?key|client[_\-]?secret|private[_\-]?key|auth[_\-]?token)\s*[:=]\s*[''"][^''"]{8,}[''"]'
+    category: "Inline Code"
+    severity: "high"
+    note: "Credential-named variable assigned a string literal. Verify this is not a live secret."
+
+  - name: "High-Entropy String Assignment"
+    regex: '(?:secret|key|token|password)\s*[:=]\s*[''"][A-Za-z0-9+/=]{32,}[''"]'
+    category: "Inline Code"
+    severity: "medium"
+    note: "High-entropy string assigned to a credential-named variable. Confirm it is not a live secret."
+
+  # ---- Dev Boilerplate ----------------------------------------------
+
+  - name: "Connection String with Embedded Password"
+    regex: '(?:postgres|postgresql|mysql|mongodb|mongodb\+srv|redis|mssql|jdbc)://[^:@\s]+:[^@\s]{3,}@'
+    category: "Dev Boilerplate"
+    severity: "high"
+    note: "Database URI contains embedded credentials. Use environment variable substitution."
+
+  - name: "Default / Weak Password in Config"
+    regex: '(?:password|passwd|pwd)\s*[:=]\s*[''"](?:admin|root|password|123456|changeme|secret|test|default|pass)[''"]'
+    category: "Dev Boilerplate"
+    severity: "high"
+    note: "Default or weak password hardcoded in config. Replace with a strong secret injected at runtime."
+
+  - name: "Unmasked Sample Env Value"
+    regex: '(?:API_KEY|SECRET_KEY|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY)\s*=\s*(?!.*<|.*your[_-]|.*placeholder|.*example|.*changeme)[A-Za-z0-9+/=_\-]{16,}'
+    category: "Dev Boilerplate"
+    severity: "high"
+    note: "Env file contains a real-looking value rather than a placeholder. Confirm it is not a live credential."
+
+  # ---- Cloud & Infra ------------------------------------------------
+
+  - name: "AWS Access Key ID"
+    regex: 'AKIA[0-9A-Z]{16}'
+    category: "Cloud & Infra"
+    severity: "high"
+    note: "AWS Access Key ID found. Rotate immediately via IAM and remove from source."
+
+  - name: "AWS Secret Access Key"
+    regex: '(?:aws_secret_access_key|AWS_SECRET_ACCESS_KEY)\s*[:=]\s*[''"]?[A-Za-z0-9/+=]{40}'
+    category: "Cloud & Infra"
+    severity: "high"
+    note: "AWS Secret Access Key found. Rotate immediately and move to IAM role / secrets manager."
+
+  - name: "Private Key Block"
+    regex: '-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----'
+    category: "Cloud & Infra"
+    severity: "high"
+    note: "Private key block in source. Remove and store in a secrets vault or environment variable."
+
+  - name: "Kubeconfig Token / Certificate Data"
+    regex: '(?:client-certificate-data|client-key-data|token:)\s*\S{20,}'
+    category: "Cloud & Infra"
+    severity: "high"
+    note: "Kubeconfig credential data in source. Rotate cluster credentials and exclude kubeconfig from VCS."
+
+  - name: "npm Auth Token"
+    regex: '(?:_auth|_authtoken|//.*:_password)\s*[:=]\s*[''"]?[A-Za-z0-9=+/]{20,}'
+    category: "Cloud & Infra"
+    severity: "high"
+    note: "npm registry auth token in source. Revoke and move to CI/CD secrets."
+
+  # ---- VCS Leak -----------------------------------------------------
+
+  - name: "Docker / Registry Token"
+    regex: '(?:DOCKER_TOKEN|REGISTRY_TOKEN|GHCR_TOKEN|dockerhub.*password|registry.*secret)\s*[:=]\s*[''"][^''"]{8,}[''"]'
+    category: "VCS Leak"
+    severity: "high"
+    note: "Container registry token found. Rotate and store in CI/CD secrets, not in source."
+
+  - name: "Twilio / SendGrid / Mailgun Key"
+    regex: '(?:twilio|sendgrid|mailgun).*(?:auth[_\-]?token|api[_\-]?key)\s*[:=]\s*[''"][^''"]{16,}[''"]'
+    category: "VCS Leak"
+    severity: "high"
+    note: "Messaging service API key in source. Rotate and inject via environment variable."

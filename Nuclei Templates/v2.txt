@@ -1,0 +1,14 @@
+http/exposures/configs/composer-config.yaml
+http/exposures/configs/package-json.yaml
+http/exposures/configs/pipfile-config.yaml
+http/exposures/files/cargo-lock-package.yaml
+http/exposures/files/cargo-toml-file.yaml
+http/exposures/files/composer-auth-json.yaml
+http/exposures/files/github-gemfile-files.yaml
+http/exposures/files/go-mod-disclosure.yaml
+http/exposures/files/nuget-package-config.yaml
+http/exposures/files/pipfile-lock.yaml
+http/exposures/files/python-requirements-disclosure.yaml
+http/exposures/files/yarn-lock.yaml
+http/exposures/tokens/dependency/dependency-track-api.yaml
+http/exposed-panels/dependency-track-panel.yaml

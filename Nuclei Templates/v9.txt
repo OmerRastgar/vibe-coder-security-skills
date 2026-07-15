@@ -1,0 +1,7 @@
+file/audit/nginx/file-nginx-rate-limiting.yaml
+cloud/azure/postgresql/azure-postgres-connection-throttling-disabled.yaml
+cloud/azure/network/azure-vnet-ddos-protection.yaml
+http/vulnerabilities/wordpress/wp-xmlrpc-brute-force.yaml
+http/exposed-panels/c2/brute-ratel-c4.yaml
+http/exposed-panels/fortinet/fortinet-fortiddos-panel.yaml
+ssl/fortinet/fortiddos-certificate.yaml

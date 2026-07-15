@@ -1,0 +1,110 @@
+rules:
+  - id: v11-typescript-as-any-cast
+    pattern-either:
+    - pattern: $REQ.body as any
+    - pattern: $REQ.query as any
+    - pattern: $REQ.params as any
+    - pattern: |
+        const $X: any = $REQ.body
+    - pattern: |
+        const $X: any = $REQ.query
+    - pattern: |
+        let $X: any = $REQ.body
+    message: "'as any' cast on request data — bypasses type safety. Use proper type validation."
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-python-extra-allow
+    pattern: |
+      class $CLASS(BaseModel):
+          ...
+          class Config:
+              extra = "allow"
+    message: "Pydantic model allows extra fields — mass assignment risk. Set extra='forbid'."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-django-fields-all
+    pattern-either:
+    - pattern: |
+        class $META:
+            fields = "__all__"
+    - pattern: |
+        class $META:
+            fields = '__all__'
+    message: "Django serializer/ModelForm uses fields='__all__' — mass assignment. Explicitly list allowed fields."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-go-interface-unmarshal
+    pattern-either:
+    - pattern: |
+        json.Unmarshal($DATA, &$VAR)
+    - pattern: |
+        json.NewDecoder($REQ.Body).Decode(&$VAR)
+    message: "json.Unmarshal/Decode — verify target $VAR is a typed struct, not map[string]interface{}."
+    languages: [go]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-java-beanutils-copy
+    pattern-either:
+    - pattern: BeanUtils.copyProperties($SRC, $DST)
+    - pattern: BeanUtils.copyProperties($SRC, $DST, $IGNORE)
+    message: "BeanUtils.copyProperties — verify only allowed fields are copied, not user-controlled data."
+    languages: [java, kotlin]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-nestjs-any-param
+    pattern: |
+      @$DECOR($X: any)
+    message: "NestJS route parameter typed as 'any' — use a DTO class with class-validator decorators."
+    languages: [typescript]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-sqlalchemy-bulk-update
+    pattern: |
+      session.bulk_update_mappings($MODEL, $DATA)
+    message: "SQLAlchemy bulk_update_mappings with raw data — ensure fields are whitelisted."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-dotnet-automapper-unrestricted
+    pattern: |
+      CreateMap<$SRC, $DST>();
+    message: "AutoMapper CreateMap without ForMember restrictions — all matching properties copied. Explicitly ignore sensitive fields."
+    languages: [csharp]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11
+
+  - id: v11-typescript-unknown-to-type
+    pattern: |
+      $X as $T
+    message: "Type assertion without runtime validation — cast may hide actual type mismatch."
+    languages: [typescript]
+    severity: WARNING
+    metadata:
+      category: type-bypass
+      vulnerability: v11

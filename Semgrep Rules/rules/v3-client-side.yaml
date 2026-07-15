@@ -1,0 +1,101 @@
+rules:
+  - id: v3-dangerous-innerHTML
+    pattern-either:
+    - pattern: $EL.innerHTML = $X
+    - pattern: $EL.outerHTML = $X
+    - pattern: $EL.insertAdjacentHTML(...)
+    - pattern: document.write($X)
+    - pattern: document.writeln($X)
+    message: >
+      Direct innerHTML/outerHTML assignment - potential DOM XSS sink.
+      Use textContent or sanitize input.
+    languages:
+    - javascript
+    - typescript
+    severity: ERROR
+    metadata:
+      category: client-side-xss
+      vulnerability: v3
+
+  - id: v3-eval-with-user-input
+    pattern-either:
+    - pattern: eval($REQ.body.$X)
+    - pattern: eval($REQ.query.$X)
+    - pattern: eval($REQ.params.$X)
+    - pattern: new Function($REQ.body.$X)
+    - pattern: new Function($REQ.query.$X)
+    message: >
+      eval/Function constructor with request data - code injection risk.
+    languages:
+    - javascript
+    - typescript
+    severity: ERROR
+    metadata:
+      category: client-side-xss
+      vulnerability: v3
+
+  - id: v3-unsafe-jquery-html
+    pattern: $($X).html($Y)
+    message: >
+      jQuery .html() with dynamic content - potential XSS. Use .text() for untrusted input.
+    languages:
+    - javascript
+    - typescript
+    severity: WARNING
+    metadata:
+      category: client-side-xss
+      vulnerability: v3
+
+  - id: v3-react-dangerouslySetInnerHTML
+    pattern: dangerouslySetInnerHTML
+    message: >
+      React dangerouslySetInnerHTML used. Ensure content is sanitized with DOMPurify.
+    languages:
+    - javascript
+    - typescript
+    severity: WARNING
+    metadata:
+      category: client-side-xss
+      vulnerability: v3
+
+  - id: v3-client-side-auth-bypass
+    pattern-either:
+    - pattern: |
+        if (window.$PROP) {
+          ...
+        }
+    - pattern: |
+        if (localStorage.getItem(...)) {
+          ...
+        }
+    - pattern: |
+        if (sessionStorage.getItem(...)) {
+          ...
+        }
+    message: >
+      Auth/access check relies solely on client-side state.
+      Route must be enforced server-side.
+    languages:
+    - javascript
+    - typescript
+    severity: WARNING
+    metadata:
+      category: client-side-authorization
+      vulnerability: v3
+
+  - id: v3-localStorage-token-trust
+    pattern-either:
+    - pattern: localStorage.getItem('token')
+    - pattern: localStorage.getItem("token")
+    - pattern: sessionStorage.getItem('token')
+    - pattern: sessionStorage.getItem("token")
+    message: >
+      JWT token stored in localStorage/sessionStorage and potentially trusted client-side.
+      Tokens should be validated server-side on every request.
+    languages:
+    - javascript
+    - typescript
+    severity: WARNING
+    metadata:
+      category: client-side-auth
+      vulnerability: v3

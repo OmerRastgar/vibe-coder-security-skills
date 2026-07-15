@@ -1,0 +1,12 @@
+services:
+  nuclei-scanner:
+    build: .
+    ports:
+      - "5000:5000"
+
+  sast-scanner:
+    build:
+      context: .
+      dockerfile: "Semgrep Rules/Dockerfile"
+    ports:
+      - "5001:5001"

@@ -11,6 +11,9 @@ Thumbs.db
 # Local settings
 .commandcode/settings.local.json
 
+# Scan output
+scan-results/
+
 # Debug / temp outputs
 dbg*.txt
 err.txt

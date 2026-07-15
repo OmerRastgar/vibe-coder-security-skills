@@ -1,0 +1,114 @@
+rules:
+  - id: v8-spread-req-body-into-query
+    pattern-either:
+    - pattern: $MODEL.update(...$REQ.body)
+    - pattern: $MODEL.updateMany(...$REQ.body)
+    - pattern: $MODEL.findOneAndUpdate($FILTER, ...$REQ.body)
+    - pattern: $MODEL.create(...$REQ.body)
+    - pattern: $MODEL.insertMany(...$REQ.body)
+    - pattern: $ORM.upsert(...$REQ.body)
+    message: "Spreading request body directly into ORM call — mass assignment risk. Whitelist allowed fields."
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
+
+  - id: v8-object-assign-req-body
+    pattern-either:
+    - pattern: Object.assign($ENTITY, $REQ.body)
+    - pattern: Object.assign($ENTITY, $REQ.body.$X)
+    - pattern: |
+        $ENTITY = { ...$ENTITY, ...$REQ.body }
+    - pattern: |
+        $ENTITY = { ...$REQ.body }
+    message: "Object.assign or spread with request body onto entity — mass assignment risk."
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
+
+  - id: v8-python-dict-unpack-into-orm
+    pattern-either:
+    - pattern: $MODEL(**request.json())
+    - pattern: $MODEL(**request.data)
+    - pattern: $MODEL(**request.get_json())
+    - pattern: $MODEL.objects.create(**request.POST)
+    - pattern: $MODEL.objects.update(**request.POST)
+    - pattern: session.query($MODEL).update($DATA)
+    message: "Unpacking raw request data into ORM model — mass assignment. Use a schema/whitelist instead."
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
+
+  - id: v8-missing-ownership-check
+    pattern-either:
+    - pattern: |
+        $MODEL.findById($REQ.params.id)
+    - pattern: |
+        $MODEL.findOne({ _id: $REQ.params.id })
+    - pattern: |
+        $MODEL.objects.get(id=$REQ.GET.get(...))
+    message: "Direct object lookup by user-supplied ID without ownership verification — possible IDOR/BOLA."
+    languages: [javascript, typescript, python]
+    severity: WARNING
+    metadata:
+      category: idor-bola
+      vulnerability: v8
+
+  - id: v8-sequelize-mass-assign
+    pattern-either:
+    - pattern: |
+        $MODEL.update($REQ.body, ...)
+    - pattern: |
+        $MODEL.create($REQ.body, ...)
+    message: "Sequelize update/create with full request body — mass assignment. Use fields whitelist."
+    languages: [javascript, typescript]
+    severity: ERROR
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
+
+  - id: v8-tenant-id-from-client
+    pattern-either:
+    - pattern: |
+        $QUERY.tenant_id = $REQ.body.tenant_id
+    - pattern: |
+        $QUERY.tenantId = $REQ.body.$X
+    - pattern: |
+        $QUERY.organization_id = $REQ.body.$X
+    message: "Tenant/org ID fetched from client request — cross-tenant data access risk. Derive from auth context."
+    languages: [javascript, typescript, python]
+    severity: WARNING
+    metadata:
+      category: tenant-isolation
+      vulnerability: v8
+
+  - id: v8-rails-mass-assign
+    pattern-either:
+    - pattern: |
+        $MODEL.new(params[:$X])
+    - pattern: |
+        $MODEL.update(params[:$X])
+    - pattern: |
+        $MODEL.create(params[:$X])
+    message: "Rails mass assignment from params without strong parameters. Use require/permit."
+    languages: [ruby]
+    severity: ERROR
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
+
+  - id: v8-django-mass-assign
+    pattern-either:
+    - pattern: $FORM.save()
+    - pattern: $FORM.save(commit=True)
+    message: "Django ModelForm.save() without field whitelist — mass assignment. Set fields or exclude in Meta."
+    languages: [python]
+    severity: WARNING
+    metadata:
+      category: mass-assignment
+      vulnerability: v8
