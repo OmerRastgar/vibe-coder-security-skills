@@ -19,16 +19,16 @@ RUN echo "Installing nuclei ${NUCLEI_VERSION}..." && \
     rm -rf /tmp/nuclei.zip /tmp/nuclei
 
 RUN echo "Cloning nuclei-templates..." && \
-    wget -qO- https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.tar.gz | \
+    curl -sSL https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.tar.gz | \
     tar xz -C /opt && \
     mv /opt/nuclei-templates-main /opt/nuclei-templates
 
-COPY "Nuclei Templates/" /opt/templates/
-COPY "Nuclei Templates/server.py" /app/server.py
-COPY "Nuclei Templates/requirements.txt" /app/requirements.txt
+COPY ["Nuclei Templates/", "/opt/templates/"]
+COPY ["Nuclei Templates/server.py", "/app/server.py"]
+COPY ["Nuclei Templates/requirements.txt", "/app/requirements.txt"]
 
 RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
-EXPOSE 5000
+EXPOSE 8080
 WORKDIR /app
-CMD ["gunicorn", "--bind", "0.0.0.0:5000", "--timeout", "300", "server:app"]
+CMD ["sh", "-c", "exec gunicorn --bind \"0.0.0.0:${PORT:-8080}\" --timeout 360 --workers 2 --threads 4 server:app"]
