@@ -448,19 +448,22 @@ def health():
     for tool_name, check_cmd in [
         ("semgrep", ["semgrep", "--version"]),
         ("trufflehog", ["trufflehog", "--version"]),
-        ("checkov", ["checkov", "--version"]),
+        ("checkov", ["pip", "show", "checkov"]),
     ]:
         try:
-            r = subprocess.run(check_cmd, capture_output=True, text=True, timeout=15)
+            r = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
             out = (r.stdout + r.stderr).strip()
-            if out:
-                versions[tool_name] = out.split("\n")[0] if "\n" in out else out[:120]
+            if tool_name == "checkov" and "Version:" in out:
+                for line in out.splitlines():
+                    if line.startswith("Version:"):
+                        versions[tool_name] = f"checkov {line.split(':',1)[1].strip()}"
+                        break
+            elif out:
+                versions[tool_name] = out.split("\n")[0][:120]
             else:
-                versions[tool_name] = "installed (no output)"
-        except FileNotFoundError:
-            versions[tool_name] = "not installed"
+                versions[tool_name] = "installed"
         except Exception as e:
-            versions[tool_name] = str(e)[:80]
+            versions[tool_name] = "not found"
 
     with state_lock:
         running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
