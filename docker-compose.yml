@@ -9,6 +9,8 @@ services:
   sast-scanner:
     build:
       context: .
-      dockerfile: "Semgrep Rules/Dockerfile"
+      dockerfile: "SemgrepRules/Dockerfile"
     ports:
-      - "5001:8080"
+      - "5001:5001"
+    environment:
+      - PORT=5001

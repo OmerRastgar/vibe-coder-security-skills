@@ -53,7 +53,7 @@ curl -X POST http://localhost:8080/scan \
 
 ### SAST Scanning — Semgrep + TruffleHog + Checkov (Static)
 
-For **source code analysis**, the `Semgrep Rules/` container bundles three industry-standard SAST tools plus custom Semgrep rules and scanners:
+For **source code analysis**, the `SemgrepRules/` container bundles three industry-standard SAST tools plus custom Semgrep rules and scanners:
 
 | Tool | Covers v# | Does |
 |------|-----------|------|

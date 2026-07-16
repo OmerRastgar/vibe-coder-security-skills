@@ -32,4 +32,4 @@ RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
 EXPOSE 8080
 WORKDIR /app
-CMD ["sh", "-c", "exec gunicorn --bind \"0.0.0.0:${PORT:-8080}\" --timeout 360 --workers 2 --threads 4 server:app"]
+CMD ["sh", "-c", "exec python3 server.py"]

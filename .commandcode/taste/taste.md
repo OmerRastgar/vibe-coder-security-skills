@@ -10,10 +10,13 @@
 - Split vulnerability scanning into two separate Docker containers: a DAST container (Nuclei-based, scans live URLs on port 5000) and a SAST container (Semgrep/TruffleHog/Checkov-based, scans source code directories on port 5001). Confidence: 0.70
 
 # docker
-- For COPY commands with paths containing spaces (e.g., "Nuclei Templates/"), use JSON array form: COPY ["src dir/", "/dest/"] instead of COPY "src dir/" /dest/ to avoid Docker's shell-parsing errors on Windows. Confidence: 0.70
+- For COPY commands with paths containing spaces (e.g., "Nuclei Templates/"), use JSON array form: COPY ["src dir/", "/dest/"] instead of COPY "src dir/" /dest/ to avoid Docker's shell-parsing errors on Windows. Confidence: 0.75
 
 # api-design
 - Save scan results to persistent external storage (file/database) in addition to returning them in the API response, so users can inspect raw output verbosity and debug failures offline. Confidence: 0.70
+- Report findings must include impact, fix, and detail fields (detail combining location + description + template info), with template_id as a separate field. Confidence: 0.70
+- Severity keys in API responses must be capitalized (Critical, High, Medium, Low) to match frontend expectations. Confidence: 0.70
+- Security score calculation formula: 100 - (Critical * 20) - (High * 10) - (Medium * 5). Confidence: 0.70
 
 # git
 - When setting up a GitHub repo, first push the basic project structure, then commit each vulnerability/feature individually with proper descriptive commits, and remove temporary/output files before committing. Confidence: 0.70

@@ -21,11 +21,11 @@ RUN echo "Installing TruffleHog ${TRUFFLEHOG_VERSION}..." && \
 
 RUN mkdir -p /app
 
-COPY ["Semgrep Rules/rules/", "/app/rules/"]
-COPY ["Semgrep Rules/scanners/", "/app/scanners/"]
-COPY ["Semgrep Rules/server.py", "/app/server.py"]
+COPY ["SemgrepRules/rules/", "/app/rules/"]
+COPY ["SemgrepRules/scanners/", "/app/scanners/"]
+COPY ["SemgrepRules/server.py", "/app/server.py"]
 COPY ["Nuclei Templates/ai_processor.py", "/app/ai_processor.py"]
-COPY ["Semgrep Rules/requirements.txt", "/app/requirements.txt"]
+COPY ["SemgrepRules/requirements.txt", "/app/requirements.txt"]
 
 RUN pip install --no-cache-dir -r /app/requirements.txt
 
