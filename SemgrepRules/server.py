@@ -28,7 +28,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request
 
 app = Flask(__name__)
-app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB
+app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB
 
 TMP_ROOT = Path("/tmp")
 SCAN_TIMEOUT = 600
@@ -378,9 +378,15 @@ def scan():
             with zipfile.ZipFile(str(workdir / "upload.zip"), "r") as zf:
                 zf.extractall(str(workdir))
             os.remove(str(workdir / "upload.zip"))
+    except zipfile.BadZipFile:
+        saved_size = 0
+        try:
+            saved_size = os.path.getsize(str(workdir / "upload.zip"))
+        except:
+            pass
         shutil.rmtree(str(workdir), ignore_errors=True)
         scan_semaphore.release()
-        return jsonify({"error": "Invalid zip file."}), 400
+        return jsonify({"error": f"Invalid zip file ({saved_size} bytes). File is corrupted or not a zip."}), 400
     except Exception as e:
         shutil.rmtree(str(workdir), ignore_errors=True)
         scan_semaphore.release()
