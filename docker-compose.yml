@@ -11,4 +11,4 @@ services:
       context: .
       dockerfile: "Semgrep Rules/Dockerfile"
     ports:
-      - "5001:5001"
+      - "5001:8080"
