@@ -79,6 +79,22 @@ def validate_vulns(ids):
     return ids
 
 
+def parse_vuln_ids(raw):
+    """Accept None, '["v1","v7"]', 'v1,v7', or just 'v7'."""
+    if raw is None:
+        return list(VULN_MAP.keys())
+    if isinstance(raw, list):
+        return validate_vulns(raw)
+    s = str(raw).strip()
+    if s.startswith("["):
+        try:
+            return validate_vulns(json.loads(s))
+        except (json.JSONDecodeError, ValueError):
+            raise ValueError(f"Could not parse vulnerabilities: {s}")
+    ids = [v.strip() for v in s.split(",") if v.strip()]
+    return validate_vulns(ids)
+
+
 def run_trufflehog(target):
     findings = []
     try:
@@ -296,25 +312,23 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
 
 @app.route("/scan", methods=["POST"])
 def scan():
-    if "file" not in request.files:
-        return jsonify({"error": "A zip file is required. Send as multipart/form-data with key 'file'."}), 400
+    is_zip = "file" in request.files and request.files["file"].filename
+    is_repo = False
 
-    file = request.files["file"]
-    if not file.filename or not file.filename.lower().endswith(".zip"):
-        return jsonify({"error": "File must be a .zip archive."}), 400
-
-    vuln_ids = validate_vulns(request.form.get("vulnerabilities"))
-    vuln_ids_list = vuln_ids if isinstance(vuln_ids, list) else [vuln_ids]
-    if isinstance(request.form.get("vulnerabilities"), str):
-        try:
-            vuln_ids_list = json.loads(request.form["vulnerabilities"])
-        except:
-            vuln_ids_list = [request.form["vulnerabilities"]]
-    else:
-        vuln_ids_list = vuln_ids_list or list(VULN_MAP.keys())
+    if not is_zip:
+        data = request.get_json(silent=True) or {}
+        repo_url = (data.get("repo_url") or data.get("repo") or "").strip()
+        if repo_url:
+            is_repo = True
+        else:
+            return jsonify({
+                "error": "Send a zip file (multipart/form-data key 'file') or a repo URL (JSON body with 'repo_url')."
+            }), 400
 
     try:
-        vuln_ids_list = validate_vulns(vuln_ids_list)
+        vuln_ids_list = parse_vuln_ids(
+            request.form.get("vulnerabilities") if is_zip else data.get("vulnerabilities")
+        )
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
 
@@ -331,10 +345,20 @@ def scan():
     workdir.mkdir(parents=True, exist_ok=True)
 
     try:
-        file.save(str(workdir / "upload.zip"))
-        with zipfile.ZipFile(str(workdir / "upload.zip"), "r") as zf:
-            zf.extractall(str(workdir))
-        os.remove(str(workdir / "upload.zip"))
+        if is_zip:
+            file = request.files["file"]
+            file.save(str(workdir / "upload.zip"))
+            with zipfile.ZipFile(str(workdir / "upload.zip"), "r") as zf:
+                zf.extractall(str(workdir))
+            os.remove(str(workdir / "upload.zip"))
+        elif is_repo:
+            workdir.rmdir()
+            result = subprocess.run(
+                ["git", "clone", "--depth", "1", repo_url, str(workdir)],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode != 0:
+                raise Exception(f"Git clone failed: {result.stderr.strip()}")
     except zipfile.BadZipFile:
         shutil.rmtree(str(workdir), ignore_errors=True)
         scan_semaphore.release()
@@ -342,7 +366,7 @@ def scan():
     except Exception as e:
         shutil.rmtree(str(workdir), ignore_errors=True)
         scan_semaphore.release()
-        return jsonify({"error": f"Failed to extract zip: {str(e)}"}), 400
+        return jsonify({"error": str(e)}), 400
 
     with state_lock:
         scan_state[scan_id] = {"status": "queued", "token": token}
