@@ -431,12 +431,26 @@ def get_scan_status(scan_id):
 @app.route("/health", methods=["GET"])
 def health():
     versions = {}
-    for tool in ["semgrep", "trufflehog", "checkov"]:
-        try:
-            r = subprocess.run([tool, "--version"], capture_output=True, text=True, timeout=5)
-            versions[tool] = r.stdout.strip().split("\n")[0]
-        except Exception:
+    tool_paths = {
+        "semgrep": ["semgrep", "/usr/local/bin/semgrep", "/root/.local/bin/semgrep"],
+        "trufflehog": ["trufflehog", "/usr/local/bin/trufflehog"],
+        "checkov": ["checkov", "/usr/local/bin/checkov", "/root/.local/bin/checkov"],
+    }
+    for tool, paths in tool_paths.items():
+        found = False
+        for p in paths:
+            try:
+                r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+                out = r.stdout.strip() or r.stderr.strip()
+                if out:
+                    versions[tool] = out.split("\n")[0]
+                    found = True
+                    break
+            except Exception:
+                continue
+        if not found:
             versions[tool] = "not found"
+
     with state_lock:
         running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
     return jsonify({
