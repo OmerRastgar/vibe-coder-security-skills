@@ -318,15 +318,20 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
 def scan():
     is_zip = "file" in request.files and request.files["file"].filename
     is_repo = False
+    is_zip_url = False
+    data = {}
 
     if not is_zip:
         data = request.get_json(silent=True) or {}
         repo_url = (data.get("repo_url") or data.get("repo") or "").strip()
+        zip_url = (data.get("zip_url") or "").strip()
         if repo_url:
             is_repo = True
+        elif zip_url:
+            is_zip_url = True
         else:
             return jsonify({
-                "error": "Send a zip file (multipart/form-data key 'file') or a repo URL (JSON body with 'repo_url')."
+                "error": "Send a zip file (multipart/form-data key 'file'), a repo URL (JSON 'repo_url'), or a zip URL (JSON 'zip_url')."
             }), 400
 
     try:
@@ -363,7 +368,16 @@ def scan():
             )
             if result.returncode != 0:
                 raise Exception(f"Git clone failed: {result.stderr.strip()}")
-    except zipfile.BadZipFile:
+        elif is_zip_url:
+            result = subprocess.run(
+                ["curl", "-sSL", "-o", str(workdir / "upload.zip"), data.get("zip_url")],
+                capture_output=True, text=True, timeout=300,
+            )
+            if result.returncode != 0:
+                raise Exception(f"Failed to download zip: {result.stderr.strip()}")
+            with zipfile.ZipFile(str(workdir / "upload.zip"), "r") as zf:
+                zf.extractall(str(workdir))
+            os.remove(str(workdir / "upload.zip"))
         shutil.rmtree(str(workdir), ignore_errors=True)
         scan_semaphore.release()
         return jsonify({"error": "Invalid zip file."}), 400
