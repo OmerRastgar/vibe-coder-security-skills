@@ -432,17 +432,17 @@ def get_scan_status(scan_id):
 def health():
     versions = {}
     tool_paths = {
-        "semgrep": ["semgrep", "/usr/local/bin/semgrep", "/root/.local/bin/semgrep"],
-        "trufflehog": ["trufflehog", "/usr/local/bin/trufflehog"],
-        "checkov": ["checkov", "/usr/local/bin/checkov", "/root/.local/bin/checkov"],
+        "semgrep": ["semgrep"],
+        "trufflehog": ["trufflehog"],
+        "checkov": ["checkov", "python3 -m checkov"],
     }
     for tool, paths in tool_paths.items():
         found = False
         for p in paths:
             try:
-                r = subprocess.run([p, "--version"], capture_output=True, text=True, timeout=5)
+                r = subprocess.run(p.split() + ["--version"], capture_output=True, text=True, timeout=10)
                 out = r.stdout.strip() or r.stderr.strip()
-                if out:
+                if out and len(out) > 3:
                     versions[tool] = out.split("\n")[0]
                     found = True
                     break
