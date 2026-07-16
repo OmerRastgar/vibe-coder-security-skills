@@ -1,8 +1,9 @@
-FROM python:3.12-alpine
+FROM python:3.12-slim
 
 ARG TRUFFLEHOG_VERSION=3.88.16
 
-RUN apk add --no-cache git curl
+RUN apt-get update && apt-get install -y --no-install-recommends git curl && \
+    rm -rf /var/lib/apt/lists/*
 
 RUN echo "Installing semgrep..." && pip install --no-cache-dir semgrep
 
