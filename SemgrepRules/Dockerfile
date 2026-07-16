@@ -19,6 +19,8 @@ RUN echo "Installing TruffleHog ${TRUFFLEHOG_VERSION}..." && \
     tar xz -C /usr/local/bin trufflehog && \
     chmod +x /usr/local/bin/trufflehog
 
+ENV PATH="/root/.local/bin:${PATH}"
+
 RUN mkdir -p /app
 
 COPY ["rules/", "/app/rules/"]
