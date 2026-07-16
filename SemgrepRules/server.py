@@ -31,6 +31,8 @@ app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB
 
 TMP_ROOT = Path("/tmp")
+PERSIST_DIR = Path("/tmp/results")
+PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 SCAN_TIMEOUT = 600
 MAX_CONCURRENT = 3
 scan_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
@@ -294,7 +296,12 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Save results + token to disk
+        # Save results + token to persistent storage (survives container restart)
+        (PERSIST_DIR / f"{scan_id}.json").write_text(json.dumps({
+            "token": token,
+            "results": response_data,
+        }, indent=2))
+        # Also save to workdir for fast retrieval
         (workdir / "results.json").write_text(json.dumps({
             "token": token,
             "results": response_data,
@@ -419,6 +426,15 @@ def get_scan_status(scan_id):
         state = scan_state.get(scan_id)
 
     if state is None:
+        # Check persistent storage first (survives container restart)
+        persist_file = PERSIST_DIR / f"{scan_id}.json"
+        if persist_file.exists():
+            saved = json.loads(persist_file.read_text())
+            if token and saved.get("token") != token:
+                return jsonify({"error": "invalid token"}), 403
+            return jsonify({"status": "completed",
+                           "results": saved.get("results", saved)})
+        # Fallback to workdir
         workdir = TMP_ROOT / scan_id
         results_file = workdir / "results.json"
         if results_file.exists():
