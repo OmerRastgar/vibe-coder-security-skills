@@ -179,7 +179,7 @@ def run_semgrep(target, tag, rule_files=None):
 def run_checkov(target):
     findings = []
     outfile = target + f"/.checkov_{uuid.uuid4().hex[:6]}.json"
-    cmd = ["checkov", "--directory", target, "--output", "json",
+    cmd = ["python3", "-m", "checkov", "--directory", target, "--output", "json",
            "--output-file-path", target, "--output-basename",
            os.path.basename(outfile).replace(".json", ""),
            "--quiet", "--skip-framework", "secrets"]
