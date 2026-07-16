@@ -385,6 +385,24 @@ def list_scans():
     return jsonify({"scan_count": len(ids), "scan_ids": ids})
 
 
+@app.route("/process-report", methods=["POST"])
+def process_report():
+    """Process raw scan results through AI analysis."""
+    try:
+        data = request.get_json(silent=True) or {}
+        scan_type = data.get("scan_type", "url")
+        scan_data = data.get("scan_data", {})
+
+        if not scan_data:
+            return jsonify({"error": "scan_data is required"}), 400
+
+        from ai_processor import process_report as process
+        report = process(scan_data, scan_type)
+        return jsonify(report)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 # ---------------------------------------------------------------------------
 # Helpers (classify, parse, version)
 # ---------------------------------------------------------------------------

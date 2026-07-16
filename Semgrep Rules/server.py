@@ -231,7 +231,7 @@ TOOL_RUNNERS = {
 def run_scan_background(scan_id, token, workdir, vuln_ids):
     try:
         with state_lock:
-            scan_state[scan_id] = {"status": "running", "progress": 0}
+            scan_state[scan_id] = {"status": "running", "progress": 0, "token": token}
 
         tools = set()
         for vid in vuln_ids:
@@ -283,6 +283,7 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
 
         total_findings = sum(v["findings_count"] for v in vuln_breakdown.values())
 
+
         response_data = {
             "scan_id": scan_id,
             "vulnerabilities_scanned": list(vuln_ids),
@@ -293,11 +294,14 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Save results to disk (survives container reuse)
-        (workdir / "results.json").write_text(json.dumps(response_data, indent=2))
+        # Save results + token to disk
+        (workdir / "results.json").write_text(json.dumps({
+            "token": token,
+            "results": response_data,
+        }, indent=2))
 
         with state_lock:
-            scan_state[scan_id] = {"status": "completed", "progress": 100}
+            scan_state[scan_id] = {"status": "completed", "progress": 100, "token": token}
 
     except Exception as e:
         with state_lock:
@@ -398,8 +402,11 @@ def get_scan_status(scan_id):
         workdir = TMP_ROOT / scan_id
         results_file = workdir / "results.json"
         if results_file.exists():
+            saved = json.loads(results_file.read_text())
+            if token and saved.get("token") != token:
+                return jsonify({"error": "invalid token"}), 403
             return jsonify({"status": "completed",
-                           "results": json.loads(results_file.read_text())})
+                           "results": saved.get("results", saved)})
         return jsonify({"error": "scan not found"}), 404
 
     if token and state.get("token") != token:
@@ -409,8 +416,8 @@ def get_scan_status(scan_id):
         workdir = TMP_ROOT / scan_id
         results_file = workdir / "results.json"
         if results_file.exists():
-            results = json.loads(results_file.read_text())
-            # Clean up extracted code immediately after delivering results
+            saved = json.loads(results_file.read_text())
+            results = saved.get("results", saved)
             shutil.rmtree(str(workdir), ignore_errors=True)
             return jsonify({"status": "completed", "results": results})
 
@@ -447,6 +454,29 @@ def list_templates():
     for vid, name in VULN_MAP.items():
         result[vid] = {"name": name, "tools": TOOL_PLAN.get(vid, [])}
     return jsonify(result)
+
+
+@app.route("/process-report", methods=["POST"])
+def process_report():
+    """Process raw scan results through AI analysis."""
+    try:
+        data = request.get_json(silent=True) or {}
+        scan_type = data.get("scan_type", "code")
+        scan_data = data.get("scan_data", {})
+
+        if not scan_data:
+            return jsonify({"error": "scan_data is required"}), 400
+
+        # Import ai_processor dynamically (shared module)
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        report = mod.process_report(scan_data, scan_type)
+        return jsonify(report)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 if __name__ == "__main__":

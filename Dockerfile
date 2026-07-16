@@ -25,6 +25,7 @@ RUN echo "Cloning nuclei-templates..." && \
 
 COPY ["Nuclei Templates/", "/opt/templates/"]
 COPY ["Nuclei Templates/server.py", "/app/server.py"]
+COPY ["Nuclei Templates/ai_processor.py", "/app/ai_processor.py"]
 COPY ["Nuclei Templates/requirements.txt", "/app/requirements.txt"]
 
 RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
