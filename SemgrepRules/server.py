@@ -179,7 +179,7 @@ def run_semgrep(target, tag, rule_files=None):
 def run_checkov(target):
     findings = []
     outfile = target + f"/.checkov_{uuid.uuid4().hex[:6]}.json"
-    cmd = ["python3", "-m", "checkov", "--directory", target, "--output", "json",
+    cmd = ["checkov", "--directory", target, "--output", "json",
            "--output-file-path", target, "--output-basename",
            os.path.basename(outfile).replace(".json", ""),
            "--quiet", "--skip-framework", "secrets"]
@@ -445,25 +445,22 @@ def get_scan_status(scan_id):
 @app.route("/health", methods=["GET"])
 def health():
     versions = {}
-    tool_paths = {
-        "semgrep": ["semgrep"],
-        "trufflehog": ["trufflehog"],
-        "checkov": ["checkov", "python3 -m checkov"],
-    }
-    for tool, paths in tool_paths.items():
-        found = False
-        for p in paths:
-            try:
-                r = subprocess.run(p.split() + ["--version"], capture_output=True, text=True, timeout=10)
-                out = r.stdout.strip() or r.stderr.strip()
-                if out and len(out) > 3:
-                    versions[tool] = out.split("\n")[0]
-                    found = True
-                    break
-            except Exception:
-                continue
-        if not found:
-            versions[tool] = "not found"
+    for tool_name, check_cmd in [
+        ("semgrep", ["semgrep", "--version"]),
+        ("trufflehog", ["trufflehog", "--version"]),
+        ("checkov", ["checkov", "--version"]),
+    ]:
+        try:
+            r = subprocess.run(check_cmd, capture_output=True, text=True, timeout=15)
+            out = (r.stdout + r.stderr).strip()
+            if out:
+                versions[tool_name] = out.split("\n")[0] if "\n" in out else out[:120]
+            else:
+                versions[tool_name] = "installed (no output)"
+        except FileNotFoundError:
+            versions[tool_name] = "not installed"
+        except Exception as e:
+            versions[tool_name] = str(e)[:80]
 
     with state_lock:
         running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
