@@ -498,10 +498,17 @@ def process_report():
         scan_type = data.get("scan_type", "code")
         scan_data = data.get("scan_data", {})
 
-        if not scan_data:
-            return jsonify({"error": "scan_data is required"}), 400
+        # Auto-unwrap if data was sent as the full scan response
+        if not scan_data and data.get("results"):
+            scan_data = data["results"]
+            if not scan_type or scan_type == "code":
+                scan_type = "code"
+        if not scan_data and data.get("findings") is not None:
+            scan_data = data
 
-        # Import ai_processor dynamically (shared module)
+        if not scan_data:
+            return jsonify({"error": "scan_data is required. Send either raw scan results or a full scan response (with 'results' key)."}), 400
+
         import importlib.util
         spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
         mod = importlib.util.module_from_spec(spec)

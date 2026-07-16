@@ -387,14 +387,19 @@ def list_scans():
 
 @app.route("/process-report", methods=["POST"])
 def process_report():
-    """Process raw scan results through AI analysis."""
+    """Process raw scan results through AI analysis. Auto-unwraps full scan responses."""
     try:
         data = request.get_json(silent=True) or {}
         scan_type = data.get("scan_type", "url")
         scan_data = data.get("scan_data", {})
 
+        if not scan_data and data.get("results"):
+            scan_data = data["results"]
+        if not scan_data and data.get("findings") is not None:
+            scan_data = data
+
         if not scan_data:
-            return jsonify({"error": "scan_data is required"}), 400
+            return jsonify({"error": "scan_data is required. Send raw scan results or a full scan response."}), 400
 
         from ai_processor import process_report as process
         report = process(scan_data, scan_type)
