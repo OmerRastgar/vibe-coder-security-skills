@@ -40,6 +40,18 @@ def process_report(raw_results, scan_type="url"):
     findings_raw, templates_exec, templates_failed = extract_findings(raw_results, scan_type)
     duration = raw_results.get("duration_sec", 0)
 
+    # Deduplicate by title+location — same vulnerability at the same location appears once
+    seen_keys = set()
+    deduped = []
+    for f in findings_raw:
+        raw_title = extract_title(f)
+        raw_loc = extract_location(f)
+        key = f"{raw_title}|||{raw_loc}"
+        if key not in seen_keys:
+            seen_keys.add(key)
+            deduped.append(f)
+    findings_raw = deduped
+
     severity_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
     normalized = []
     for f in findings_raw:
