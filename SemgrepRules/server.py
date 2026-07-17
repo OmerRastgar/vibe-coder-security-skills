@@ -286,6 +286,13 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
         total_findings = sum(v["findings_count"] for v in vuln_breakdown.values())
 
 
+        # Tag findings with their vulnerability context BEFORE auto-processing
+        for vid in vuln_ids:
+            for f in findings_by_vuln.get(vid, []):
+                f["vulnerability_id"] = vid
+                f["vulnerability_name"] = VULN_MAP.get(vid, "")
+                f["vulnerability_targets"] = ", ".join(TOOL_PLAN.get(vid, []))
+
         response_data = {
             "scan_id": scan_id,
             "vulnerabilities_scanned": list(vuln_ids),

@@ -193,6 +193,13 @@ def run_scan_background(scan_id, url, vuln_ids, per_vuln, all_paths, concurrency
         unmapped = len([f for f in findings
             if not classify_finding_from_template_id(f.get("template-id") or "", vuln_ids)])
 
+        # Tag findings with their vulnerability context
+        for f in findings:
+            vid = classify_finding_from_template_id(f.get("template-id", "") or "")
+            if vid:
+                f["vulnerability_id"] = vid
+                f["vulnerability_name"] = VULN_MAP.get(vid, [None])[1] if vid in VULN_MAP else ""
+
         shutil.rmtree(scan_workdir, ignore_errors=True)
 
         response_data = {

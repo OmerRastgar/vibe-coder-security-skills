@@ -62,9 +62,8 @@ def process_report(raw_results, scan_type="url"):
             "severity": sev,
             "template_id": extract_template_id(f),
             "location": extract_location(f),
-            "description": extract_description(f),
-            "request": extract_request(f),
-            "response": extract_response(f),
+            "description": extract_description(f) or extract_testimonial(f),
+            "evidence": extract_evidence(f),
         })
 
     score = calculate_score(severity_counts)
@@ -76,14 +75,16 @@ def process_report(raw_results, scan_type="url"):
 
     findings = []
     for nf, ar in zip(normalized, ai_results):
+        vuln_name = extract_vuln_context(nf)
         findings.append({
             "severity": nf["severity"],
             "title": ar.get("title", nf["title"]),
             "impact": ar.get("impact", nf["description"][:200]),
-            "fix": ar.get("fix", "Review the detected location and apply the appropriate fix."),
+            "fix": ar.get("fix", "Review the detected location and apply the standard fix for this vulnerability class."),
             "detail": build_detail(nf),
             "aiPrompt": ar.get("aiPrompt", build_ai_prompt(nf)),
             "template_id": nf["template_id"],
+            "vulnerability": vuln_name[0] if vuln_name else "",
         })
 
     return {
@@ -144,38 +145,70 @@ def extract_title(finding):
     # Nuclei format
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("name", "")
-    # SAST - semgrep check_name
+    # v6 custom scanner — name + category
+    if finding.get("name") and finding.get("category"):
+        return f"[{finding['category']}] {finding['name']}"
+    # v2 scanner type field
+    if finding.get("type") and finding.get("package"):
+        return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
+    if finding.get("type"):
+        return finding["type"]
+    # Semgrep check_name
     if finding.get("check_name"):
         return finding["check_name"]
-    # SAST - v2 scanner type field
-    if finding.get("type"):
-        return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
-    # SAST - trufflehog
+    # Trufflehog detector name
     if finding.get("DetectorName"):
         return f"{finding.get('DetectorName', '')}: {finding.get('Raw', '')[:60]}"
-    return finding.get("name") or finding.get("template-id", "") or finding.get("title", "") or "Unknown finding"
+    # Fallback
+    if finding.get("name"):
+        return finding["name"]
+    if finding.get("title"):
+        return finding["title"]
+    return "Unknown finding"
 
 
 def extract_template_id(finding):
-    return finding.get("template-id") or finding.get("check_id") or finding.get("type", "")
+    tid = finding.get("template-id") or finding.get("check_id") or ""
+    if tid:
+        return tid
+    # v2 scanner
+    if finding.get("type"):
+        return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
+    # v6 custom scanner
+    if finding.get("name") and finding.get("category"):
+        return f"{finding['category']}: {finding['name']}"
+    # Trufflehog detector
+    if finding.get("DetectorName"):
+        return finding["DetectorName"]
+    return ""
 
 
 def extract_location(finding):
     # Nuclei
     if finding.get("matched-at"):
         return finding["matched-at"]
-    # SAST file-based
+    # v6 scanner — file + line
     if finding.get("file"):
         line = finding.get("line", "")
-        return f"{finding['file']}:{line}" if line else finding["file"]
+        if line:
+            return f"{finding['file']}:{line}"
+        return finding["file"]
+    # Checkov
     if finding.get("file_path"):
+        line_range = finding.get("file_line_range", [])
+        if line_range:
+            return f"{finding['file_path']}:{line_range[0]}"
         return finding["file_path"]
+    # Semgrep
     if finding.get("path"):
         s = finding.get("start", {})
         return f"{finding['path']}:{s.get('line', '?')}"
-    # SAST package-based
+    # v2 scanner — package context
     if finding.get("package") and finding.get("ecosystem"):
         return f"{finding.get('ecosystem', '')}:{finding.get('package', '')}"
+    # Evidence only
+    if finding.get("evidence"):
+        return finding["evidence"]
     return "unknown"
 
 
@@ -183,19 +216,39 @@ def extract_description(finding):
     # Nuclei
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("description", "")
-    # SAST detail/note
-    if finding.get("detail"):
-        return finding["detail"]
+    # v6 scanner
     if finding.get("note"):
         return finding["note"]
+    if finding.get("detail"):
+        return finding["detail"]
+    # Trufflehog
     if finding.get("Raw"):
-        return finding["Raw"][:300]
+        return finding["Raw"][:500]
     # Checkov
     if finding.get("guideline"):
         return finding["guideline"]
     # Semgrep message
     if isinstance(finding.get("extra"), dict) and finding["extra"].get("message"):
         return finding["extra"]["message"]
+    return ""
+
+
+def extract_evidence(finding):
+    """Extract a snippet of evidence for the technical detail section."""
+    # v6 scanner evidence
+    if finding.get("evidence"):
+        return finding["evidence"]
+    # Nuclei request/response
+    if finding.get("request"):
+        return finding["request"][:500]
+    # Trufflehog raw
+    if finding.get("Raw"):
+        return finding["Raw"][:500]
+    # v2 scanner note/detail
+    if finding.get("note"):
+        return finding["note"]
+    if finding.get("detail"):
+        return finding["detail"]
     return ""
 
 
@@ -213,11 +266,12 @@ def build_detail(finding):
     parts = []
     if finding["description"]:
         parts.append(finding["description"])
+    vname, vid = extract_vuln_context(finding)
+    if vname:
+        parts.append(f"Vulnerability Category: {vname} ({vid})")
     if finding["request"]:
-        parts.append(f"Request:\n```\n{finding['request']}\n```")
-    if finding["response"]:
-        parts.append(f"Response:\n```\n{finding['response']}\n```")
-    parts.append(f"Template: {finding['template_id']}")
+        parts.append(f"Evidence Snippet:\n```\n{finding['request'][:500]}\n```")
+    parts.append(f"Scanner Template: {finding['template_id']}")
     parts.append(f"Location: {finding['location']}")
     return "\n\n".join(parts)
 
@@ -284,7 +338,8 @@ def build_gemini_prompt(findings, scan_type):
             f"{i}. [{f['severity'].upper()}] {f['title']}\n"
             f"   Template: {f['template_id']}\n"
             f"   Location: {f['location']}\n"
-            f"   Description: {f['description'][:300]}"
+            f"   Description: {f['description'][:300]}\n"
+            f"   Evidence: {f.get('evidence', '')[:200]}"
         )
     block = "\n\n".join(flist)
 
@@ -380,15 +435,45 @@ def build_fallback(findings):
     return summary, results
 
 
+def extract_vuln_context(finding):
+    """Pull vulnerability name and ID if tagged."""
+    if finding.get("vulnerability_name"):
+        return finding["vulnerability_name"], finding.get("vulnerability_id", "")
+    return "", ""
+
+
 def build_ai_prompt(finding):
     sev = finding["severity"].upper()
     title = finding["title"]
     desc = finding["description"] or "No description available."
     loc = finding["location"]
     tid = finding["template_id"]
+    vname, vid = extract_vuln_context(finding)
+
+    vuln_line = ""
+    if vname:
+        vuln_line = f"**Vulnerability Category:** {vname} ({vid})\n\n"
+        if "Baking Secrets" in vname:
+            vuln_line += (
+                "This vulnerability falls under 'Baking Secrets into Source' — "
+                "credentials or secrets hardcoded in source code, config files, or environment stubs "
+                "that should be moved to environment variables or a secrets manager.\n\n"
+            )
+        elif "Package Hallucination" in vname:
+            vuln_line += (
+                "This vulnerability falls under 'Package Hallucination' — "
+                "a dependency that appears to be AI-generated or typosquatted, "
+                "which may not actually exist in the official registry.\n\n"
+            )
+        elif "Client-Side" in vname:
+            vuln_line += (
+                "This vulnerability falls under 'Client-Side Security Misplacements' — "
+                "security logic enforced only in the browser that must be moved to the server side.\n\n"
+            )
 
     return (
         f"I need help fixing a {sev}-severity security issue in my application.\n\n"
+        f"{vuln_line}"
         f"**Issue:** {title}\n\n"
         f"**Detected by:** {tid}\n\n"
         f"**Location:** {loc}\n\n"
@@ -397,7 +482,5 @@ def build_ai_prompt(finding):
         f"1. An explanation of the vulnerability and its impact\n"
         f"2. Step-by-step instructions to fix it\n"
         f"3. Code examples showing the fix\n"
-        f"4. Any additional security best practices to prevent similar issues\n\n"
-        f"**Technical detail:**\n"
-        f"```\n{finding.get('request', finding.get('location', ''))}\n```"
+        f"4. Any additional security best practices to prevent similar issues"
     )
