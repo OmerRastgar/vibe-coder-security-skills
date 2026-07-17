@@ -362,7 +362,9 @@ def scan():
             is_zip_url = True
         else:
             return jsonify({
-                "error": "Send a zip file (multipart/form-data key 'file'), a repo URL (JSON 'repo_url'), or a zip URL (JSON 'zip_url')."
+                "error": "No valid input provided.",
+                "hint": "Send: (1) a zip file via multipart/form-data with key 'file', (2) a JSON body with 'repo_url', or (3) a JSON body with 'zip_url'.",
+                "received_keys": list(data.keys()) if data else (list(request.form.keys()) if request.form else []),
             }), 400
 
     try:
