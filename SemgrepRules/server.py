@@ -296,15 +296,30 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
 
-        # Save results + token to persistent storage (survives container restart)
+        # Save results + token to persistent storage
         (PERSIST_DIR / f"{scan_id}.json").write_text(json.dumps({
             "token": token,
             "results": response_data,
         }, indent=2))
-        # Also save to workdir for fast retrieval
         (workdir / "results.json").write_text(json.dumps({
             "token": token,
             "results": response_data,
+        }, indent=2))
+
+        # Auto-process the report with AI analysis
+        try:
+            import importlib.util
+            spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            processed = mod.process_report(response_data, "code")
+        except Exception:
+            processed = {"error": "AI processing failed", "score": 0, "findings": []}
+
+        # Save processed report
+        (PERSIST_DIR / f"{scan_id}_report.json").write_text(json.dumps({
+            "token": token,
+            "report": processed,
         }, indent=2))
 
         with state_lock:
@@ -449,13 +464,23 @@ def get_scan_status(scan_id):
         return jsonify({"error": "invalid token"}), 403
 
     if state["status"] == "completed":
+        # Return the AI-processed report if available
+        persist_report = PERSIST_DIR / f"{scan_id}_report.json"
+        if persist_report.exists():
+            saved = json.loads(persist_report.read_text())
+            if token and saved.get("token") != token:
+                return jsonify({"error": "invalid token"}), 403
+            shutil.rmtree(str(TMP_ROOT / scan_id), ignore_errors=True)
+            return jsonify({"status": "completed", "report": saved.get("report", {})})
+        # Fallback to raw results
         workdir = TMP_ROOT / scan_id
         results_file = workdir / "results.json"
         if results_file.exists():
             saved = json.loads(results_file.read_text())
-            results = saved.get("results", saved)
+            if token and saved.get("token") != token:
+                return jsonify({"error": "invalid token"}), 403
             shutil.rmtree(str(workdir), ignore_errors=True)
-            return jsonify({"status": "completed", "results": results})
+            return jsonify({"status": "completed", "results": saved.get("results", saved)})
 
     if state["status"] == "failed":
         shutil.rmtree(str(TMP_ROOT / scan_id), ignore_errors=True)

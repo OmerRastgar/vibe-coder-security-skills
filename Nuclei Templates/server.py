@@ -213,6 +213,17 @@ def run_scan_background(scan_id, url, vuln_ids, per_vuln, all_paths, concurrency
 
         (RESULTS_DIR / f"{scan_id}_summary.json").write_text(json.dumps(response_data, indent=2))
 
+        # Auto-process the report with AI analysis
+        try:
+            from ai_processor import process_report as process
+            processed = process(response_data, "url")
+            (RESULTS_DIR / f"{scan_id}_report.json").write_text(json.dumps({
+                "token": "not_used",
+                "report": processed,
+            }, indent=2))
+        except Exception:
+            pass
+
         with state_lock:
             scan_state[scan_id] = {"status": "completed", "progress": 100}
 
@@ -301,6 +312,11 @@ def get_scan_status(scan_id):
         return jsonify({"error": "invalid token"}), 403
 
     if state["status"] == "completed":
+        # Return the AI-processed report if available
+        report_file = RESULTS_DIR / f"{scan_id}_report.json"
+        if report_file.exists():
+            saved = json.loads(report_file.read_text())
+            return jsonify({"status": "completed", "report": saved.get("report", {})})
         summary_file = RESULTS_DIR / f"{scan_id}_summary.json"
         if summary_file.exists():
             return jsonify({"status": "completed", "results": json.loads(summary_file.read_text())})
