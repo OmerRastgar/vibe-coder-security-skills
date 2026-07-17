@@ -98,9 +98,17 @@ def extract_findings(raw, scan_type):
     templates = 0
     failed = 0
 
-    # Nuclei format
-    if raw.get("findings") is not None:
-        findings = raw.get("findings", [])
+    # SAST format — check first since SAST has empty findings[] but real results in tool_results
+    tr = raw.get("tool_results") or {}
+    if tr:
+        for tool, tres in tr.items():
+            findings.extend(tres.get("findings", []))
+        return findings, 0, 0
+
+    # Nuclei format — findings directly under raw
+    raw_findings = raw.get("findings", [])
+    if raw_findings:
+        findings = raw_findings
         so = raw.get("scan_output", {})
         sm = so.get("summary", {})
         templates = sm.get("templates_executed", 0)
@@ -110,47 +118,73 @@ def extract_findings(raw, scan_type):
                 failed += 1
         return findings, templates, failed
 
-    # SAST format
-    tr = raw.get("tool_results", {})
-    if tr:
-        for tool, tres in tr.items():
-            findings.extend(tres.get("findings", []))
-        return findings, 0, 0
-
-    # Fallback: breakdown-based
+    # Fallback: breakdown-based (processed report)
     bd = raw.get("breakdown", {})
     if bd:
         findings = raw.get("findings", [])
-        return findings, 0, 0
+        if findings:
+            return findings, 0, 0
 
     return findings, templates, failed
 
 
 def extract_title(finding):
+    # Nuclei format
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("name", "")
-    return finding.get("check_name") or finding.get("name") or finding.get("template-id", "") or "Unknown"
+    # SAST - semgrep check_name
+    if finding.get("check_name"):
+        return finding["check_name"]
+    # SAST - v2 scanner type field
+    if finding.get("type"):
+        return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
+    # SAST - trufflehog
+    if finding.get("DetectorName"):
+        return f"{finding.get('DetectorName', '')}: {finding.get('Raw', '')[:60]}"
+    return finding.get("name") or finding.get("template-id", "") or finding.get("title", "") or "Unknown finding"
 
 
 def extract_template_id(finding):
-    return finding.get("template-id") or finding.get("check_id") or ""
+    return finding.get("template-id") or finding.get("check_id") or finding.get("type", "")
 
 
 def extract_location(finding):
+    # Nuclei
     if finding.get("matched-at"):
         return finding["matched-at"]
+    # SAST file-based
+    if finding.get("file"):
+        line = finding.get("line", "")
+        return f"{finding['file']}:{line}" if line else finding["file"]
     if finding.get("file_path"):
         return finding["file_path"]
     if finding.get("path"):
         s = finding.get("start", {})
         return f"{finding['path']}:{s.get('line', '?')}"
+    # SAST package-based
+    if finding.get("package") and finding.get("ecosystem"):
+        return f"{finding.get('ecosystem', '')}:{finding.get('package', '')}"
     return "unknown"
 
 
 def extract_description(finding):
+    # Nuclei
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("description", "")
-    return finding.get("detail") or finding.get("note") or ""
+    # SAST detail/note
+    if finding.get("detail"):
+        return finding["detail"]
+    if finding.get("note"):
+        return finding["note"]
+    if finding.get("Raw"):
+        return finding["Raw"][:300]
+    # Checkov
+    if finding.get("guideline"):
+        return finding["guideline"]
+    # Semgrep message
+    if isinstance(finding.get("extra"), dict) and finding["extra"].get("message"):
+        return finding["extra"]["message"]
+    return ""
 
 
 def extract_request(finding):
@@ -336,11 +370,17 @@ def build_fallback(findings):
 
 def build_ai_prompt(finding):
     sev = finding["severity"].upper()
+    title = finding["title"]
+    desc = finding["description"] or "No description available."
+    loc = finding["location"]
+    tid = finding["template_id"]
+
     return (
         f"I need help fixing a {sev}-severity security issue in my application.\n\n"
-        f"**Issue:** {finding['title']} — {finding['location']}\n\n"
-        f"**Template:** {finding['template_id']}\n\n"
-        f"**Description:** {finding['description'] or 'No description available.'}\n\n"
+        f"**Issue:** {title}\n\n"
+        f"**Detected by:** {tid}\n\n"
+        f"**Location:** {loc}\n\n"
+        f"**Description:** {desc}\n\n"
         f"Please provide:\n"
         f"1. An explanation of the vulnerability and its impact\n"
         f"2. Step-by-step instructions to fix it\n"

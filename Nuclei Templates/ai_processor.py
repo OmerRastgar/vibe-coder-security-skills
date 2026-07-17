@@ -98,9 +98,17 @@ def extract_findings(raw, scan_type):
     templates = 0
     failed = 0
 
-    # Nuclei format
-    if raw.get("findings") is not None:
-        findings = raw.get("findings", [])
+    # SAST format — check first since SAST has empty findings[] but real results in tool_results
+    tr = raw.get("tool_results") or {}
+    if tr:
+        for tool, tres in tr.items():
+            findings.extend(tres.get("findings", []))
+        return findings, 0, 0
+
+    # Nuclei format — findings directly under raw
+    raw_findings = raw.get("findings", [])
+    if raw_findings:
+        findings = raw_findings
         so = raw.get("scan_output", {})
         sm = so.get("summary", {})
         templates = sm.get("templates_executed", 0)
@@ -110,18 +118,12 @@ def extract_findings(raw, scan_type):
                 failed += 1
         return findings, templates, failed
 
-    # SAST format
-    tr = raw.get("tool_results", {})
-    if tr:
-        for tool, tres in tr.items():
-            findings.extend(tres.get("findings", []))
-        return findings, 0, 0
-
-    # Fallback: breakdown-based
+    # Fallback: breakdown-based (processed report)
     bd = raw.get("breakdown", {})
     if bd:
         findings = raw.get("findings", [])
-        return findings, 0, 0
+        if findings:
+            return findings, 0, 0
 
     return findings, templates, failed
 
