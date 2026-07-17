@@ -391,8 +391,14 @@ def scan():
             os.remove(str(workdir / "upload.zip"))
         elif is_repo:
             workdir.rmdir()
+            # Support private repos: if GITHUB_TOKEN is set, inject it into the URL
+            clone_url = repo_url
+            github_token = os.environ.get("GITHUB_TOKEN", "")
+            if github_token and "github.com" in repo_url:
+                # Convert https://github.com/user/repo -> https://token@github.com/user/repo
+                clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
             result = subprocess.run(
-                ["git", "clone", "--depth", "1", repo_url, str(workdir)],
+                ["git", "clone", "--depth", "1", clone_url, str(workdir)],
                 capture_output=True, text=True, timeout=120,
             )
             if result.returncode != 0:
@@ -526,6 +532,7 @@ def health():
         "versions": versions,
         "concurrent_scans": running,
         "max_concurrent": MAX_CONCURRENT,
+        "github_auth": bool(os.environ.get("GITHUB_TOKEN")),
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })
 
