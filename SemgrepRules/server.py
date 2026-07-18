@@ -337,7 +337,7 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
-            processed = mod.process_report(response_data, "code")
+            processed = mod.process_report(response_data, "code", debug_path=str(PERSIST_DIR / f"{scan_id}_gemini_debug.json"))
             if processed:
                 app.logger.info(f"AI processed report: score={processed.get('score')}, findings={len(processed.get('findings', []))}")
         except Exception as e:
@@ -601,6 +601,36 @@ def get_scan_status(scan_id):
         return jsonify({"status": "failed", "error": state.get("error")})
 
     return jsonify({"status": state["status"], "progress": state.get("progress", 0)})
+
+
+@app.route("/debug-gemini/<scan_id>", methods=["GET"])
+def debug_gemini(scan_id):
+    """Show the Gemini prompt and raw findings for a completed scan."""
+    token = request.headers.get("X-Scan-Token") or request.args.get("token")
+    # Check token
+    report_file = PERSIST_DIR / f"{scan_id}_report.json"
+    if not report_file.exists():
+        return jsonify({"error": "no report found — scan may not have completed yet"}), 404
+    saved = json.loads(report_file.read_text())
+    if token and saved.get("token") != token:
+        return jsonify({"error": "invalid token"}), 403
+    # Check for Gemini debug file
+    debug_file = PERSIST_DIR / f"{scan_id}_gemini_debug.json"
+    if debug_file.exists():
+        return jsonify(json.loads(debug_file.read_text()))
+    # No debug file — Gemini wasn't called (API_KEY missing)
+    raw_file = PERSIST_DIR / f"{scan_id}.json"
+    raw = {}
+    if raw_file.exists():
+        raw = json.loads(raw_file.read_text()).get("results", {})
+    return jsonify({
+        "gemini_called": False,
+        "reason": "GEMINI_API_KEY not set or empty",
+        "raw_findings_count": sum(
+            len(v.get("findings", [])) for v in raw.get("tool_results", {}).values()
+        ),
+        "raw_tool_results_keys": list(raw.get("tool_results", {}).keys()),
+    })
 
 
 @app.route("/health", methods=["GET"])

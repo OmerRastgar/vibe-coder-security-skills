@@ -33,12 +33,16 @@ MAX_SCORE = 100
 # Public API
 # ---------------------------------------------------------------------------
 
-def process_report(raw_results, scan_type="url"):
+def process_report(raw_results, scan_type="url", debug_path=None):
     """
     Takes raw scan results dict and returns AIProcessedReport.
+    If debug_path is given, saves Gemini prompt + raw findings there.
     """
     findings_raw, templates_exec, templates_failed = extract_findings(raw_results, scan_type)
     duration = raw_results.get("duration_sec", 0)
+
+    # Filter out empty/phantom findings (e.g. TruffleHog results with no detector or raw data)
+    findings_raw = [f for f in findings_raw if _has_meaningful_data(f)]
 
     # Deduplicate by title+location — same vulnerability at the same location appears once
     seen_keys = set()
@@ -79,6 +83,16 @@ def process_report(raw_results, scan_type="url"):
 
     if API_KEY:
         summary, ai_results = call_gemini(normalized, scan_type)
+        # Save Gemini debug info if debug_path provided
+        if debug_path:
+            _gemini_debug = {"gemini_called": True, "gemini_input_count": len(normalized),
+                             "gemini_output_count": len(ai_results),
+                             "raw_findings_sent": [{k: str(v)[:200] for k, v in f.items()} for f in normalized]}
+            try:
+                Path(debug_path).write_text(json.dumps(_gemini_debug, indent=2))
+            except Exception:
+                pass
+        summary, ai_results = call_gemini(normalized, scan_type)
         findings = []
         for nf, ar in zip(normalized, ai_results):
             findings.append({
@@ -116,6 +130,17 @@ def process_report(raw_results, scan_type="url"):
         "processedBy": "gemini" if API_KEY else "local",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
+
+
+def _has_meaningful_data(f):
+    """Filter out empty/phantom findings with no detector, no evidence, and no location."""
+    if not isinstance(f, dict):
+        return False
+    # At least one of these must have real content
+    has_title = bool(f.get("DetectorName") or f.get("name") or f.get("type") or f.get("check_id") or f.get("check_name"))
+    has_evidence = bool(f.get("Raw") or f.get("evidence") or f.get("note") or f.get("detail") or f.get("description"))
+    has_location = bool(f.get("file") or f.get("path") or f.get("file_path") or f.get("matched-at"))
+    return (has_title and has_evidence) or (has_location and has_evidence)
 
 
 # ---------------------------------------------------------------------------
