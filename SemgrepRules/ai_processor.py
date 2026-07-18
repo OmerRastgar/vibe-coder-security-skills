@@ -66,7 +66,11 @@ def process_report(raw_results, scan_type="url"):
             "evidence": extract_evidence(f),
         })
 
-    score = calculate_score(severity_counts)
+    # Fallback — ensure all 4 keys exist
+    severity_counts = {"Critical": severity_counts.get("Critical", 0),
+                       "High": severity_counts.get("High", 0),
+                       "Medium": severity_counts.get("Medium", 0),
+                       "Low": severity_counts.get("Low", 0)}
 
     if API_KEY:
         summary, ai_results = call_gemini(normalized, scan_type)
@@ -75,27 +79,26 @@ def process_report(raw_results, scan_type="url"):
 
     findings = []
     for nf, ar in zip(normalized, ai_results):
-        vuln_name = extract_vuln_context(nf)
+        vuln_name, _ = extract_vuln_context(nf)
         findings.append({
             "severity": nf["severity"],
-            "title": ar.get("title", nf["title"]),
-            "impact": ar.get("impact", nf["description"][:200]),
-            "fix": ar.get("fix", "Review the detected location and apply the standard fix for this vulnerability class."),
+            "title": nf["title"] or "Security Finding",
+            "impact": nf.get("description", "No impact description available.")[:200] or "Security issue detected by scanner.",
+            "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
             "detail": build_detail(nf),
-            "aiPrompt": ar.get("aiPrompt", build_ai_prompt(nf)),
-            "template_id": nf["template_id"],
-            "vulnerability": vuln_name[0] if vuln_name else "",
+            "aiPrompt": build_ai_prompt(nf),
+            "template_id": nf["template_id"] or "",
         })
 
     return {
         "score": score,
         "duration_sec": duration,
-        "summary": summary,
+        "summary": summary or "Scan complete.",
         "severityCounts": severity_counts,
-        "findings": findings,
-        "templatesExecuted": templates_exec,
-        "templatesFailed": templates_failed,
-        "totalFindings": len(findings),
+        "findings": findings if findings is not None else [],
+        "templatesExecuted": templates_exec or 0,
+        "templatesFailed": templates_failed or 0,
+        "totalFindings": len(findings) if findings else 0,
         "processedBy": "gemini" if API_KEY else "local",
         "timestamp": datetime.now(timezone.utc).isoformat(),
     }
@@ -116,7 +119,10 @@ def extract_findings(raw, scan_type):
     if tr:
         for tool, tres in tr.items():
             findings.extend(tres.get("findings", []))
-        return findings, 0, 0
+        # Count tools from the raw response if available
+        templates = raw.get("templates_executed", 0)
+        failed = raw.get("templates_failed", 0)
+        return findings, templates, failed
 
     # Nuclei format — findings directly under raw
     raw_findings = raw.get("findings", [])
@@ -288,9 +294,7 @@ def normalize_severity(raw):
         return "High"
     if s in ("medium", "med", "warning", "warn"):
         return "Medium"
-    if s in ("low", "info", "note"):
-        return "Low"
-    return "Low"
+    return "Low"  # info/note/unknown all map to Low
 
 
 def calculate_score(counts):
