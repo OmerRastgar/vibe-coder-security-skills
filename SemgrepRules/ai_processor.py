@@ -74,21 +74,30 @@ def process_report(raw_results, scan_type="url"):
 
     if API_KEY:
         summary, ai_results = call_gemini(normalized, scan_type)
+        findings = []
+        for nf, ar in zip(normalized, ai_results):
+            findings.append({
+                "severity": nf["severity"],
+                "title": (ar.get("title") or nf.get("title", "Security Finding") or "Security Finding")[:100],
+                "impact": (ar.get("impact") or nf.get("description", "") or "No impact description available.")[:200],
+                "fix": (ar.get("fix") or "Review the detected location and apply the standard fix for this vulnerability class.")[:200],
+                "detail": build_detail(nf),
+                "aiPrompt": (ar.get("aiPrompt") or build_ai_prompt(nf))[:4000],
+                "template_id": nf.get("template_id", ""),
+            })
     else:
         summary, ai_results = build_fallback(normalized)
-
-    findings = []
-    for nf, ar in zip(normalized, ai_results):
-        vuln_name, _ = extract_vuln_context(nf)
-        findings.append({
-            "severity": nf["severity"],
-            "title": nf["title"] or "Security Finding",
-            "impact": nf.get("description", "No impact description available.")[:200] or "Security issue detected by scanner.",
-            "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
-            "detail": build_detail(nf),
-            "aiPrompt": build_ai_prompt(nf),
-            "template_id": nf["template_id"] or "",
-        })
+        findings = []
+        for nf, ar in zip(normalized, ai_results):
+            findings.append({
+                "severity": nf["severity"],
+                "title": (ar.get("title") or nf.get("title", "Security Finding") or "Security Finding")[:100],
+                "impact": (ar.get("impact") or nf.get("description", "") or "No impact description available.")[:200],
+                "fix": (ar.get("fix") or "Review the detected location and apply the standard fix for this vulnerability class.")[:200],
+                "detail": build_detail(nf),
+                "aiPrompt": (ar.get("aiPrompt") or build_ai_prompt(nf))[:4000],
+                "template_id": nf.get("template_id", ""),
+            })
 
     return {
         "score": score,
@@ -339,38 +348,46 @@ def build_gemini_prompt(findings, scan_type):
     flist = []
     for i, f in enumerate(findings, 1):
         flist.append(
-            f"{i}. [{f['severity'].upper()}] {f['title']}\n"
-            f"   Template: {f['template_id']}\n"
-            f"   Location: {f['location']}\n"
-            f"   Description: {f['description'][:300]}\n"
-            f"   Evidence: {f.get('evidence', '')[:200]}"
+            f"FINDING #{i}:\n"
+            f"  severity: {f['severity']}\n"
+            f"  scanner_id: {f['template_id']}\n"
+            f"  file/location: {f['location']}\n"
+            f"  description: {f['description'][:300]}\n"
+            f"  evidence: {f.get('evidence', '')[:200]}\n"
+            f"  vulnerability_category: {f.get('vulnerability_name', 'unknown')}"
         )
-    block = "\n\n".join(flist)
+    block = "\n\n---\n\n".join(flist)
 
-    return f"""You are a senior application security engineer. Analyze the following {ctx} findings and produce a structured report.
+    return f"""You are a senior application security engineer. Analyze the following {ctx} findings and produce a structured security report.
 
-Return ONLY valid JSON with this exact shape:
+RETURN ONLY VALID JSON — no markdown, no code blocks, no explanatory text. Just the JSON object:
+
 {{
-  "score": <0-100>,
-  "summary": "<2-sentence executive summary>",
+  "score": <integer 0-100, calculated as 100 minus severity deductions>,
+  "summary": "<2-3 sentence executive summary with number of findings by severity>",
   "findings": [
     {{
-      "title": "<human readable title, max 60 chars>",
-      "impact": "<1-2 sentences on what an attacker could do>",
-      "fix": "<1-2 sentences on how to fix it>",
-      "aiPrompt": "<detailed markdown remediation prompt for an AI coding assistant>"
+      "severity": "<Critical|High|Medium|Low — re-evaluate based on context>",
+      "title": "<human-readable title, max 80 chars, e.g. 'Hardcoded Postgres credentials in docker-compose.yml'>",
+      "impact": "<1-2 sentences on real-world impact: what an attacker could do, what data is at risk>",
+      "fix": "<1-2 specific, actionable sentences on how to fix EXACTLY this instance>",
+      "aiPrompt": "<detailed markdown prompt for an AI coding assistant with vulnerability explanation, location, evidence snippet, step-by-step fix instructions, code example, and prevention tips>"
     }}
   ]
 }}
 
-The aiPrompt must be a self-contained markdown block the user can copy to any AI tool:
-- Start with "I need help fixing a {severity}-severity security issue in my application."
-- Include the template ID, affected URL/file, and what the scanner detected.
-- Ask for: explanation of the risk, step-by-step fix instructions, code examples, and prevention tips.
+Score: Critical=-20, High=-10, Medium=-5, Low=-1. Minimum 0.
 
-Score formula: 100 minus (Critical * 20) minus (High * 10) minus (Medium * 5) minus (Low * 1).
+aiPrompt must include:
+- "I need help fixing a {severity}-severity security issue in my application."
+- The exact file path and line number from the finding
+- The vulnerability category and what it means
+- The evidence snippet (connection string, hardcoded key, etc.)
+- 3-5 specific numbered steps to fix
+- A code example showing the correct approach
+- Prevention tips
 
-Findings:
+FINDINGS:
 {block}"""
 
 
