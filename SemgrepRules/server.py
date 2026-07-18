@@ -12,6 +12,9 @@ Security:
   - Cloud Run kills the container between requests; no disk persists.
 """
 
+# SAST server — handles zip uploads, git repo clones, and AI processing
+# Version marker: 2026-07-17-fe0373b (force rebuild)
+
 import json
 import os
 import re
