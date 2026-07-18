@@ -355,7 +355,11 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             fallback_findings = []
             seen_findings = set()
             for f in raw_findings_list:
-                if not isinstance(f, dict):
+                # Filter out empty/phantom findings
+                has_title = bool(f.get("DetectorName") or f.get("name") or f.get("type") or f.get("check_id") or f.get("check_name"))
+                has_evidence = bool(f.get("Raw") or f.get("evidence") or f.get("note") or f.get("detail") or f.get("description"))
+                has_location = bool(f.get("file") or f.get("path") or f.get("file_path") or f.get("matched-at"))
+                if not ((has_title and has_evidence) or (has_location and has_evidence)):
                     continue
                 # Deduplicate by raw evidence hash
                 ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
