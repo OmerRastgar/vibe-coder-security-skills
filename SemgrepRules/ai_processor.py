@@ -526,10 +526,14 @@ def build_fallback(findings):
 
     results = []
     for f in findings:
+        desc = f["description"][:200] or ""
+        vname, vid = extract_vuln_context(f)
+        impact_text = desc or (f"Detected by {f['template_id']}" if f["template_id"] else f"Security issue detected.")
+        fix_text = f"Remove the hardcoded secret from {f['location'] or 'the source file'} and use environment variables or a secrets manager." if vname else "Review the detected location and apply the standard fix for this vulnerability class."
         results.append({
             "title": f["title"],
-            "impact": f["description"][:200] or f"Detected by {f['template_id']}.",
-            "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
+            "impact": impact_text,
+            "fix": fix_text,
             "aiPrompt": build_ai_prompt(f),
         })
     return summary, results
@@ -545,6 +549,37 @@ def extract_vuln_context(finding):
 def build_ai_prompt(finding):
     sev = finding["severity"].upper()
     title = finding["title"]
+    desc = finding["description"][:300] or "No description available."
+    evidence = finding["evidence"][:300] or ""
+    loc = finding["location"] or "unknown"
+    vname, vid = extract_vuln_context(finding)
+    template = finding["template_id"] or ""
+
+    vuln_context = ""
+    if vname and vid:
+        vuln_context = (
+            f"\n\n**Vulnerability Category:** {vname} ({vid})\n"
+            f"This vulnerability falls under '{vname}' — credentials or secrets hardcoded in source code, "
+            f"config files, or environment stubs that should be moved to environment variables or a secrets manager.\n"
+        )
+
+    evidence_block = ""
+    if evidence:
+        evidence_block = f"\n\n**Evidence found:**\n```\n{evidence}\n```\n"
+
+    return (
+        f"I need help fixing a {sev}-severity security issue in my application.\n\n"
+        f"**Issue:** {title}\n"
+        f"{vuln_context}"
+        f"**Location:** {loc}\n"
+        f"{evidence_block}"
+        f"**Description:** {desc}\n\n"
+        f"Please provide:\n"
+        f"1. An explanation of the vulnerability and its impact\n"
+        f"2. Step-by-step instructions to fix it\n"
+        f"3. Code examples showing the fix\n"
+        f"4. Any additional security best practices to prevent similar issues"
+    )
     desc = finding["description"] or "No description available."
     loc = finding["location"]
     tid = finding["template_id"]
