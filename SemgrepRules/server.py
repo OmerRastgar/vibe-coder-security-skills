@@ -13,7 +13,7 @@ Security:
 """
 
 # SAST server — handles zip uploads, git repo clones, and AI processing
-# Version marker: 2026-07-17-fe0373b (force rebuild)
+# Build marker: 2026-07-18-v2 (force rebuild for extract_safe_* functions)
 
 import json
 import os
