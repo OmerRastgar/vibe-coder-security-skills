@@ -388,7 +388,17 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
                     "impact": imp,
                     "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
                     "detail": detail,
-                    "aiPrompt": "Scan this finding and suggest a fix.",
+                    "aiPrompt": (
+                        f"I need help fixing a Low-severity security issue in my application.\n\n"
+                        f"**Issue:** {t}\n\n"
+                        f"**Evidence found:** {ev[:200]}\n\n"
+                        f"**Location:** {loc}\n\n"
+                        f"Please provide:\n"
+                        f"1. An explanation of the vulnerability and its impact\n"
+                        f"2. Step-by-step instructions to fix it\n"
+                        f"3. Code examples showing the fix\n"
+                        f"4. Any additional security best practices to prevent similar issues"
+                    ),
                     "template_id": f.get("type") or f.get("category") or "",
                 })
             processed = {
