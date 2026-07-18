@@ -46,7 +46,8 @@ def process_report(raw_results, scan_type="url"):
     for f in findings_raw:
         raw_title = extract_title(f)
         raw_loc = extract_location(f)
-        key = f"{raw_title}|||{raw_loc}"
+        raw_evidence = f.get("evidence") or f.get("Raw") or ""
+        key = f"{raw_title}|||{raw_loc}|||{raw_evidence[:100]}"
         if key not in seen_keys:
             seen_keys.add(key)
             deduped.append(f)
@@ -56,14 +57,18 @@ def process_report(raw_results, scan_type="url"):
     normalized = []
     for f in findings_raw:
         sev = normalize_severity(f.get("severity", "unknown"))
+        vname, vid = extract_vuln_context(f)
         severity_counts[sev] = severity_counts.get(sev, 0) + 1
         normalized.append({
             "title": extract_title(f),
             "severity": sev,
             "template_id": extract_template_id(f),
             "location": extract_location(f),
-            "description": extract_description(f) or extract_testimonial(f),
+            "description": extract_description(f),
             "evidence": extract_evidence(f),
+            "vulnerability_name": vname,
+            "vulnerability_id": vid,
+            "_raw": {k: str(v)[:500] for k, v in f.items() if k not in ("_raw",)},
         })
 
     # Fallback — ensure all 4 keys exist
@@ -347,45 +352,60 @@ def build_gemini_prompt(findings, scan_type):
     ctx = "URL-based web application scan" if scan_type == "url" else "source code static analysis"
     flist = []
     for i, f in enumerate(findings, 1):
+        raw_str = json.dumps(f.get("_raw", {}), indent=2)[:800]
         flist.append(
             f"FINDING #{i}:\n"
             f"  severity: {f['severity']}\n"
-            f"  scanner_id: {f['template_id']}\n"
-            f"  file/location: {f['location']}\n"
+            f"  scanner_template: {f['template_id']}\n"
+            f"  file_or_url: {f['location']}\n"
             f"  description: {f['description'][:300]}\n"
-            f"  evidence: {f.get('evidence', '')[:200]}\n"
-            f"  vulnerability_category: {f.get('vulnerability_name', 'unknown')}"
+            f"  evidence_found: {f.get('evidence', '')[:200]}\n"
+            f"  vulnerability_category: {f.get('vulnerability_name', 'unknown')} ({f.get('vulnerability_id', '')})\n"
+            f"  raw_scanner_output: {raw_str}"
         )
     block = "\n\n---\n\n".join(flist)
 
-    return f"""You are a senior application security engineer. Analyze the following {ctx} findings and produce a structured security report.
+    return f"""You are a senior application security engineer. You are given raw scanner findings and must produce a clean, structured security report for a developer dashboard.
 
-RETURN ONLY VALID JSON — no markdown, no code blocks, no explanatory text. Just the JSON object:
+Each finding below is the ACTUAL raw data from security scanners (Nuclei, Semgrep, TruffleHog, Checkov, or custom scanners). Your job is to interpret this raw data and generate human-readable, actionable information.
+
+**Critically important:** The raw_scanner_output field contains the COMPLETE raw scanner finding — including file paths, line numbers, connection strings, API keys, URLs, HTTP response snippets, and package names. Use this data to write SPECIFIC titles, impacts, and fixes — not generic placeholders.
+
+Example of what NOT to do:
+  ❌ title: "Unknown"
+  ❌ impact: "Detected by ."
+  ❌ fix: "Review the detected location."
+
+Example of what TO do:
+  ✅ title: "Hardcoded Postgres credentials in docker-compose.yml line 5"
+  ✅ impact: "The database password is committed in plain text. Anyone with access to the git repository can connect to the production database and steal or destroy user data."
+  ✅ fix: "Replace the hardcoded username and password with environment variables. Add POSTGRES_USER and POSTGRES_PASSWORD to a .env file, add .env to .gitignore, and reference them in docker-compose.yml using ${POSTGRES_USER}:${POSTGRES_PASSWORD}."
+
+For aiPrompt, write a COMPLETE self-contained markdown prompt that a developer can copy-paste into any AI coding assistant to get a detailed fix. Include:
+- The vulnerability category and what it means
+- The exact file and line where the issue was found
+- The evidence snippet (mask sensitive parts with xxxx)
+- 3-5 numbered, specific remediation steps
+- A code example showing the correct implementation
+- Prevention tips
+
+RETURN ONLY VALID JSON — no markdown blocks, no explanatory text, just this object:
 
 {{
-  "score": <integer 0-100, calculated as 100 minus severity deductions>,
-  "summary": "<2-3 sentence executive summary with number of findings by severity>",
+  "score": <integer 0-100>,
+  "summary": "<2-3 sentence summary including count and severity breakdown>",
   "findings": [
     {{
-      "severity": "<Critical|High|Medium|Low — re-evaluate based on context>",
-      "title": "<human-readable title, max 80 chars, e.g. 'Hardcoded Postgres credentials in docker-compose.yml'>",
-      "impact": "<1-2 sentences on real-world impact: what an attacker could do, what data is at risk>",
-      "fix": "<1-2 specific, actionable sentences on how to fix EXACTLY this instance>",
-      "aiPrompt": "<detailed markdown prompt for an AI coding assistant with vulnerability explanation, location, evidence snippet, step-by-step fix instructions, code example, and prevention tips>"
+      "severity": "<Critical|High|Medium|Low>",
+      "title": "<specific human-readable title, max 100 chars>",
+      "impact": "<1-2 sentences on real-world attacker impact>",
+      "fix": "<1-2 specific actionable sentences>",
+      "aiPrompt": "<complete self-contained markdown prompt>"
     }}
   ]
 }}
 
-Score: Critical=-20, High=-10, Medium=-5, Low=-1. Minimum 0.
-
-aiPrompt must include:
-- "I need help fixing a {severity}-severity security issue in my application."
-- The exact file path and line number from the finding
-- The vulnerability category and what it means
-- The evidence snippet (connection string, hardcoded key, etc.)
-- 3-5 specific numbered steps to fix
-- A code example showing the correct approach
-- Prevention tips
+Score: Critical=-20, High=-10, Medium=-5, Low=-1. 100 = no issues.
 
 FINDINGS:
 {block}"""
