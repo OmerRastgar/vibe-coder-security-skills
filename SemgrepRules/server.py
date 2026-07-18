@@ -341,18 +341,50 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             app.logger.error(f"AI processing failed: {e}")
 
         if not processed or processed.get("score") is None:
+            # Inline fallback: define safe extractors here to avoid NameError
+            raw_findings_list = []
+            for tool_name in ["trufflehog", "scanner_v2", "scanner_v6"]:
+                raw_findings_list.extend(
+                    response_data.get("tool_results", {}).get(tool_name, {}).get("findings", [])
+                )
+            fallback_findings = []
+            for f in raw_findings_list:
+                if not isinstance(f, dict):
+                    continue
+                t = (f.get("name") or f.get("type") or f.get("check_name") or f.get("DetectorName") or "Security Finding")
+                imp = (f.get("note") or f.get("detail") or f.get("Raw") or "Security issue detected by scanner.")[:200]
+                ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
+                loc = ""
+                if f.get("file"):
+                    line = f.get("line", "")
+                    loc = f"{f['file']}:{line}" if line else f['file']
+                elif f.get("matched-at"):
+                    loc = f["matched-at"]
+                detail_parts = []
+                if loc:
+                    detail_parts.append(f"Location: {loc}")
+                if f.get("note"):
+                    detail_parts.append(f"{f['note']}")
+                if f.get("detail"):
+                    detail_parts.append(f"{f['detail']}")
+                if ev:
+                    detail_parts.append(f"Evidence: {ev[:300]}")
+                detail = "\n".join(detail_parts) if detail_parts else "No details available."
+                fallback_findings.append({
+                    "severity": "Low",
+                    "title": t,
+                    "impact": imp,
+                    "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
+                    "detail": detail,
+                    "aiPrompt": "Scan this finding and suggest a fix.",
+                    "template_id": f.get("type") or f.get("category") or "",
+                })
             processed = {
                 "score": 100 - min(total_findings * 5, 100),
                 "duration_sec": duration,
                 "summary": f"Scan complete. {total_findings} issue(s) found.",
                 "severityCounts": {"Critical": 0, "High": 0, "Medium": 0, "Low": total_findings},
-                "findings": [
-                    {"severity": "Low", "title": extract_safe_title(f), "impact": extract_safe_impact(f),
-                     "fix": "Review and fix.", "detail": extract_safe_detail(f),
-                     "aiPrompt": "Scan this finding and suggest a fix.", "template_id": "unknown"}
-                    for f in response_data.get("tool_results", {}).get("scanner_v2", {}).get("findings", []) or
-                         response_data.get("tool_results", {}).get("trufflehog", {}).get("findings", []) or []
-                ],
+                "findings": fallback_findings,
                 "templatesExecuted": total_tools_run,
                 "templatesFailed": total_tools_failed,
                 "totalFindings": total_findings,
@@ -614,41 +646,3 @@ def process_report():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5001)), threaded=True)
-
-
-def extract_safe_title(f):
-    """Fallback title extractor for when AI processing fails."""
-    if isinstance(f, dict):
-        if f.get("name") and f.get("category"):
-            return f"{f['name']} ({f['category']})"
-        if f.get("type"):
-            return f"{f.get('type', '')}: {f.get('package', f.get('file', ''))}"
-        if f.get("DetectorName"):
-            return f"{f.get('DetectorName', '')} secret found"
-        if f.get("check_name"):
-            return f["check_name"]
-    return "Security Finding"
-
-
-def extract_safe_impact(f):
-    """Fallback impact extractor."""
-    if isinstance(f, dict):
-        return f.get("note") or f.get("detail") or f.get("Raw") or f.get("description", "Security issue detected.")[:200]
-    return "Security issue detected."
-
-
-def extract_safe_detail(f):
-    """Fallback detail extractor for the technical detail section."""
-    if not isinstance(f, dict):
-        return "No details available."
-    parts = []
-    if f.get("file"):
-        line = f.get("line", "")
-        parts.append(f"File: {f['file']}:{line}" if line else f"File: {f['file']}")
-    if f.get("note"):
-        parts.append(f"Note: {f['note']}")
-    if f.get("evidence"):
-        parts.append(f"Evidence: {f['evidence']}")
-    if f.get("Raw"):
-        parts.append(f"Found: {f['Raw'][:300]}")
-    return "\n".join(parts) if parts else "No details available."
