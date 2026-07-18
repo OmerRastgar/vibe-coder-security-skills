@@ -521,6 +521,13 @@ def scan():
     with state_lock:
         scan_state[scan_id] = {"status": "queued", "token": token}
 
+    # Persist token to disk IMMEDIATELY so it survives container restarts
+    (PERSIST_DIR / f"{scan_id}.json").write_text(json.dumps({
+        "token": token, "status": "queued"
+    }))
+
+    # ... background thread runs and overwrites with full results when done
+
     thread = threading.Thread(
         target=run_scan_background,
         args=(scan_id, token, workdir, vuln_ids_list),
@@ -551,6 +558,9 @@ def get_scan_status(scan_id):
             saved = json.loads(persist_file.read_text())
             if token and saved.get("token") != token:
                 return jsonify({"error": "invalid token"}), 403
+            # If still queued/running, return running status
+            if saved.get("status") in ("queued", "running"):
+                return jsonify({"status": "running", "progress": 0})
             return jsonify({"status": "completed",
                            "results": saved.get("results", saved)})
         # Fallback to workdir
