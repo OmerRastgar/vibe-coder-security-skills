@@ -14,7 +14,7 @@ import os
 import re
 from datetime import datetime, timezone
 from urllib import request as urlrequest
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
@@ -85,14 +85,25 @@ def process_report(raw_results, scan_type="url", debug_path=None):
         summary, ai_results = call_gemini(normalized, scan_type)
         # Save Gemini debug info if debug_path provided
         if debug_path:
-            _gemini_debug = {"gemini_called": True, "gemini_input_count": len(normalized),
+            _gemini_debug = {"gemini_called": True, "gemini_api_key_set": bool(API_KEY),
+                             "gemini_input_count": len(normalized),
                              "gemini_output_count": len(ai_results),
+                             "gemini_error": summary if not ai_results else None,
                              "raw_findings_sent": [{k: str(v)[:200] for k, v in f.items()} for f in normalized]}
             try:
                 Path(debug_path).write_text(json.dumps(_gemini_debug, indent=2))
             except Exception:
                 pass
-        summary, ai_results = call_gemini(normalized, scan_type)
+        # If Gemini returned an error string (not a list), treat as error and fall through to fallback
+        if isinstance(ai_results, str):
+            gemini_error = ai_results
+            ai_results = []
+        else:
+            gemini_error = None
+
+        # If Gemini failed or returned no results, fall back to local processing
+        if gemini_error or not ai_results:
+            summary, ai_results = build_fallback(normalized)
         findings = []
         for nf, ar in zip(normalized, ai_results):
             findings.append({
@@ -351,6 +362,9 @@ def call_gemini(findings, scan_type):
     if not findings:
         return "Scan completed successfully. No security issues were detected.", []
 
+    if not API_KEY:
+        return _gemini_error("GEMINI_API_KEY is not set. Set it as an environment variable on the Cloud Run service.")
+
     prompt = build_gemini_prompt(findings, scan_type)
     body = json.dumps({
         "contents": [{"parts": [{"text": prompt}]}],
@@ -360,17 +374,37 @@ def call_gemini(findings, scan_type):
     try:
         req = urlrequest.Request(f"{GEMINI_URL}?key={API_KEY}", data=body,
                                  headers={"Content-Type": "application/json"})
-        with urlrequest.urlopen(req, timeout=30) as resp:
+        with urlrequest.urlopen(req, timeout=60) as resp:
             raw = json.loads(resp.read().decode("utf-8"))
-    except (URLError, json.JSONDecodeError, OSError):
-        return build_fallback(findings)
+    except HTTPError as e:
+        error_body = ""
+        try:
+            error_body = e.read().decode("utf-8")[:500]
+        except Exception:
+            pass
+        return _gemini_error(f"Gemini API HTTP error {e.code}: {error_body}")
+    except URLError as e:
+        return _gemini_error(f"Gemini API connection error: {e.reason}")
+    except json.JSONDecodeError as e:
+        return _gemini_error(f"Gemini returned invalid JSON: {e}")
+    except OSError as e:
+        return _gemini_error(f"Gemini request failed: {e}")
 
+    # Parse candidates
     text = ""
     for candidate in raw.get("candidates", []):
         for part in candidate.get("content", {}).get("parts", []):
             text += part.get("text", "")
 
+    if not text:
+        return _gemini_error(f"Gemini returned empty response. Raw keys: {list(raw.keys())}")
+
     return parse_gemini_response(text, findings)
+
+
+def _gemini_error(msg):
+    """Return a structured error with clear messaging — NOT silent fallback."""
+    return msg, []
 
 
 def build_gemini_prompt(findings, scan_type):
