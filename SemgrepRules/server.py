@@ -13,8 +13,9 @@ Security:
 """
 
 # SAST server — handles zip uploads, git repo clones, and AI processing
-# Build marker: 2026-07-18-v2 (force rebuild for extract_safe_* functions)
+# Build marker: 2026-07-18-v3 (dedup in fallback)
 
+import hashlib
 import json
 import os
 import re
@@ -329,7 +330,7 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             "results": response_data,
         }, indent=2))
 
-        # Auto-process the report with AI analysis
+        # Auto-process the report with AI analysis — ALWAYS use this path
         processed = None
         try:
             import importlib.util
@@ -337,8 +338,12 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
             mod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(mod)
             processed = mod.process_report(response_data, "code")
+            if processed:
+                app.logger.info(f"AI processed report: score={processed.get('score')}, findings={len(processed.get('findings', []))}")
         except Exception as e:
             app.logger.error(f"AI processing failed: {e}")
+            import traceback
+            app.logger.error(traceback.format_exc())
 
         if not processed or processed.get("score") is None:
             # Inline fallback: define safe extractors here to avoid NameError
@@ -348,9 +353,16 @@ def run_scan_background(scan_id, token, workdir, vuln_ids):
                     response_data.get("tool_results", {}).get(tool_name, {}).get("findings", [])
                 )
             fallback_findings = []
+            seen_findings = set()
             for f in raw_findings_list:
                 if not isinstance(f, dict):
                     continue
+                # Deduplicate by raw evidence hash
+                ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
+                ev_key = hashlib.md5(ev[:200].encode()).hexdigest()[:12] if ev else str(id(f))
+                if ev_key in seen_findings:
+                    continue
+                seen_findings.add(ev_key)
                 t = (f.get("name") or f.get("type") or f.get("check_name") or f.get("DetectorName") or "Security Finding")
                 imp = (f.get("note") or f.get("detail") or f.get("Raw") or "Security issue detected by scanner.")[:200]
                 ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
