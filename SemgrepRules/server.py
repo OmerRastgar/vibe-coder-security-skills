@@ -1,19 +1,14 @@
-"""SAST Scan Server — async, zip-upload, zero-state code scanner.
+"""SAST Scan Server — synchronous, zero-state code scanner.
 
 POST /scan           → multipart/form-data: zip + fields
-                       Returns 202 {scan_id, token}
-GET  /scan/{id}      → header X-Scan-Token required
-                       Returns {status, results}
+                       Returns 200 {scan_id, status, report}
 GET  /health         → tool versions
+POST /process-report → reprocess raw scan data with AI
 
 Security:
-  - Each scan gets a unique random token; only the submitter sees it.
   - Code is extracted to /tmp/{scan_id}/, scanned, and deleted immediately.
-  - Cloud Run kills the container between requests; no disk persists.
+  - No state persists between requests — container can scale to zero.
 """
-
-# SAST server — handles zip uploads, git repo clones, and AI processing
-# Build marker: 2026-07-18-v3 (dedup in fallback)
 
 import hashlib
 import json
@@ -37,13 +32,9 @@ CORS(app)
 app.config["MAX_CONTENT_LENGTH"] = 500 * 1024 * 1024  # 500MB
 
 TMP_ROOT = Path("/tmp")
-PERSIST_DIR = Path("/tmp/results")
-PERSIST_DIR.mkdir(parents=True, exist_ok=True)
 SCAN_TIMEOUT = 600
 MAX_CONCURRENT = 3
 scan_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
-scan_state = {}
-state_lock = threading.Lock()
 
 VULN_MAP = {
     "v1":  "AI Commit Trap",
@@ -88,7 +79,6 @@ def validate_vulns(ids):
 
 
 def parse_vuln_ids(raw):
-    """Accept None, '["v1","v7"]', 'v1,v7', or just 'v7'."""
     if raw is None:
         return list(VULN_MAP.keys())
     if isinstance(raw, list):
@@ -102,6 +92,10 @@ def parse_vuln_ids(raw):
     ids = [v.strip() for v in s.split(",") if v.strip()]
     return validate_vulns(ids)
 
+
+# ---------------------------------------------------------------------------
+# Tool runners
+# ---------------------------------------------------------------------------
 
 def run_trufflehog(target):
     findings = []
@@ -194,7 +188,6 @@ def run_checkov(target):
     try:
         subprocess.run(cmd, capture_output=True, text=True, timeout=SCAN_TIMEOUT)
         real_out = Path(target) / (os.path.basename(outfile).replace(".json", "") + ".json")
-        # checkov prefixes with results_
         for f in Path(target).glob("results_*.json"):
             real_out = f
             break
@@ -233,203 +226,168 @@ TOOL_RUNNERS = {
 
 
 # ---------------------------------------------------------------------------
-# Background scan runner
+# Synchronous scan runner
 # ---------------------------------------------------------------------------
 
-def run_scan_background(scan_id, token, workdir, vuln_ids):
+def run_scan(workdir, vuln_ids):
+    """Run all tools, process with AI, return the final report dict."""
+    scan_id = uuid.uuid4().hex[:12]
+    tools = set()
+    for vid in vuln_ids:
+        tools.update(TOOL_PLAN.get(vid, []))
+
+    tool_results = {}
+    start = time.time()
+
+    # Run tools in parallel
+    threads = []
+    thread_lock = threading.Lock()
+
+    def run_one(tool_name):
+        try:
+            result = TOOL_RUNNERS[tool_name](str(workdir))
+        except Exception as e:
+            result = {"tool": tool_name, "findings": [{"error": str(e)}]}
+        with thread_lock:
+            tool_results[tool_name] = result
+
+    for tool in tools:
+        t = threading.Thread(target=run_one, args=(tool,), daemon=True)
+        t.start()
+        threads.append(t)
+
+    for t in threads:
+        t.join(timeout=SCAN_TIMEOUT)
+
+    duration = round(time.time() - start, 2)
+
+    # Build breakdown
+    vuln_breakdown = {}
+    total_tools_run = 0
+    total_tools_failed = 0
+    for vid in vuln_ids:
+        tools_list = TOOL_PLAN.get(vid, [])
+        vuln_breakdown[vid] = {"name": VULN_MAP[vid], "tools_used": tools_list}
+        total_tools_run += len(tools_list)
+        for tool_name in tools_list:
+            if tool_name in tool_results and any(
+                "error" in str(f) for f in tool_results[tool_name].get("findings", [])
+            ):
+                total_tools_failed += 1
+
+    # Aggregate findings per vN
+    findings_by_vuln = defaultdict(list)
+    for tool_name, tr in tool_results.items():
+        for vid in vuln_ids:
+            if tool_name.startswith(f"semgrep_{vid}") or (tool_name in TOOL_PLAN.get(vid, [])):
+                findings_by_vuln[vid].extend(tr.get("findings", []))
+
+    for vid in vuln_breakdown:
+        vuln_breakdown[vid]["findings_count"] = len(findings_by_vuln.get(vid, []))
+
+    total_findings = sum(v["findings_count"] for v in vuln_breakdown.values())
+
+    # Tag findings with vulnerability context
+    for vid in vuln_ids:
+        for f in findings_by_vuln.get(vid, []):
+            f["vulnerability_id"] = vid
+            f["vulnerability_name"] = VULN_MAP.get(vid, "")
+            f["vulnerability_targets"] = ", ".join(TOOL_PLAN.get(vid, []))
+
+    response_data = {
+        "scan_id": scan_id,
+        "vulnerabilities_scanned": list(vuln_ids),
+        "breakdown": vuln_breakdown,
+        "tool_results": tool_results,
+        "findings_total": total_findings,
+        "templates_executed": total_tools_run,
+        "templates_failed": total_tools_failed,
+        "duration_sec": duration,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Process with AI
+    processed = None
     try:
-        with state_lock:
-            scan_state[scan_id] = {"status": "running", "progress": 0, "token": token}
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        processed = mod.process_report(response_data, "code")
+    except Exception as e:
+        app.logger.error(f"AI processing failed: {e}")
 
-        tools = set()
-        for vid in vuln_ids:
-            tools.update(TOOL_PLAN.get(vid, []))
-
-        tool_results = {}
-        start = time.time()
-
-        threads = []
-        thread_lock = threading.Lock()
-
-        def run_one(tool_name):
-            try:
-                result = TOOL_RUNNERS[tool_name](str(workdir))
-            except Exception as e:
-                result = {"tool": tool_name, "findings": [{"error": str(e)}]}
-            with thread_lock:
-                tool_results[tool_name] = result
-
-        for tool in tools:
-            t = threading.Thread(target=run_one, args=(tool,), daemon=True)
-            t.start()
-            threads.append(t)
-
-        for t in threads:
-            t.join(timeout=SCAN_TIMEOUT)
-
-        duration = round(time.time() - start, 2)
-
-        # Build breakdown + count tools
-        vuln_breakdown = {}
-        total_tools_run = 0
-        total_tools_failed = 0
-        for vid in vuln_ids:
-            tools_list = TOOL_PLAN.get(vid, [])
-            vuln_breakdown[vid] = {
-                "name": VULN_MAP[vid],
-                "tools_used": tools_list,
-            }
-            total_tools_run += len(tools_list)
-            for tool_name in tools_list:
-                if tool_name in tool_results and any(
-                    "error" in str(f) for f in tool_results[tool_name].get("findings", [])
-                ):
-                    total_tools_failed += 1
-
-        # Aggregate findings per vN
-        findings_by_vuln = defaultdict(list)
-        for tool_name, tr in tool_results.items():
-            # Rough mapping: semgrep_v3 -> v3
-            for vid in vuln_ids:
-                if tool_name.startswith(f"semgrep_{vid}") or \
-                   (tool_name in TOOL_PLAN.get(vid, [])):
-                    findings_by_vuln[vid].extend(tr.get("findings", []))
-
-        for vid in vuln_breakdown:
-            vuln_breakdown[vid]["findings_count"] = len(findings_by_vuln.get(vid, []))
-
-        total_findings = sum(v["findings_count"] for v in vuln_breakdown.values())
-
-
-        # Tag findings with their vulnerability context BEFORE auto-processing
-        for vid in vuln_ids:
-            for f in findings_by_vuln.get(vid, []):
-                f["vulnerability_id"] = vid
-                f["vulnerability_name"] = VULN_MAP.get(vid, "")
-                f["vulnerability_targets"] = ", ".join(TOOL_PLAN.get(vid, []))
-
-        response_data = {
-            "scan_id": scan_id,
-            "vulnerabilities_scanned": list(vuln_ids),
-            "breakdown": vuln_breakdown,
-            "tool_results": tool_results,
-            "findings_total": total_findings,
-            "templates_executed": total_tools_run,
-            "templates_failed": total_tools_failed,
+    # Fallback if AI processing failed
+    if not processed or processed.get("score") is None:
+        raw_findings_list = []
+        for tool_name in ["trufflehog", "scanner_v2", "scanner_v6"]:
+            raw_findings_list.extend(
+                response_data.get("tool_results", {}).get(tool_name, {}).get("findings", [])
+            )
+        fallback_findings = []
+        seen_findings = set()
+        for f in raw_findings_list:
+            if not isinstance(f, dict):
+                continue
+            has_title = bool(f.get("DetectorName") or f.get("name") or f.get("type") or f.get("check_id") or f.get("check_name"))
+            has_evidence = bool(f.get("Raw") or f.get("evidence") or f.get("note") or f.get("detail") or f.get("description"))
+            has_location = bool(f.get("file") or f.get("path") or f.get("file_path") or f.get("matched-at"))
+            if not ((has_title and has_evidence) or (has_location and has_evidence)):
+                continue
+            ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
+            ev_key = hashlib.md5(ev[:200].encode()).hexdigest()[:12] if ev else str(id(f))
+            if ev_key in seen_findings:
+                continue
+            seen_findings.add(ev_key)
+            t = (f.get("name") or f.get("type") or f.get("check_name") or f.get("DetectorName") or "Security Finding")
+            imp = (f.get("note") or f.get("detail") or f.get("Raw") or "Security issue detected by scanner.")[:200]
+            loc = ""
+            if f.get("file"):
+                line = f.get("line", "")
+                loc = f"{f['file']}:{line}" if line else f['file']
+            elif f.get("matched-at"):
+                loc = f["matched-at"]
+            detail_parts = []
+            if loc:
+                detail_parts.append(f"Location: {loc}")
+            if f.get("note"):
+                detail_parts.append(f"{f['note']}")
+            if f.get("detail"):
+                detail_parts.append(f"{f['detail']}")
+            if ev:
+                detail_parts.append(f"Evidence: {ev[:300]}")
+            detail = "\n".join(detail_parts) if detail_parts else "No details available."
+            fallback_findings.append({
+                "severity": "Low",
+                "title": t,
+                "impact": imp,
+                "fix": f"Remove the hardcoded secret from {loc or 'the source file'} and use environment variables or a secrets manager.",
+                "detail": detail,
+                "aiPrompt": (
+                    f"I need help fixing a Low-severity security issue in my application.\n\n"
+                    f"**Issue:** {t}\n\n"
+                    f"**Evidence found:** {ev[:200]}\n\n"
+                    f"**Location:** {loc}\n\n"
+                    f"Please provide:\n"
+                    f"1. An explanation of the vulnerability and its impact\n"
+                    f"2. Step-by-step instructions to fix it\n"
+                    f"3. Code examples showing the fix\n"
+                    f"4. Any additional security best practices to prevent similar issues"
+                ),
+                "template_id": f.get("type") or f.get("category") or "",
+            })
+        processed = {
+            "score": 100 - min(total_findings * 5, 100),
             "duration_sec": duration,
-            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "summary": f"Scan complete. {total_findings} issue(s) found.",
+            "severityCounts": {"Critical": 0, "High": 0, "Medium": 0, "Low": total_findings},
+            "findings": fallback_findings,
+            "templatesExecuted": total_tools_run,
+            "templatesFailed": total_tools_failed,
+            "totalFindings": total_findings,
         }
 
-        # Save results + token to persistent storage
-        (PERSIST_DIR / f"{scan_id}.json").write_text(json.dumps({
-            "token": token,
-            "results": response_data,
-        }, indent=2))
-        (workdir / "results.json").write_text(json.dumps({
-            "token": token,
-            "results": response_data,
-        }, indent=2))
-
-        # Auto-process the report with AI analysis — ALWAYS use this path
-        processed = None
-        try:
-            import importlib.util
-            spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
-            processed = mod.process_report(response_data, "code", debug_path=str(PERSIST_DIR / f"{scan_id}_gemini_debug.json"))
-            if processed:
-                app.logger.info(f"AI processed report: score={processed.get('score')}, findings={len(processed.get('findings', []))}")
-        except Exception as e:
-            app.logger.error(f"AI processing failed: {e}")
-            import traceback
-            app.logger.error(traceback.format_exc())
-
-        if not processed or processed.get("score") is None:
-            # Inline fallback: define safe extractors here to avoid NameError
-            raw_findings_list = []
-            for tool_name in ["trufflehog", "scanner_v2", "scanner_v6"]:
-                raw_findings_list.extend(
-                    response_data.get("tool_results", {}).get(tool_name, {}).get("findings", [])
-                )
-            fallback_findings = []
-            seen_findings = set()
-            for f in raw_findings_list:
-                # Filter out empty/phantom findings
-                has_title = bool(f.get("DetectorName") or f.get("name") or f.get("type") or f.get("check_id") or f.get("check_name"))
-                has_evidence = bool(f.get("Raw") or f.get("evidence") or f.get("note") or f.get("detail") or f.get("description"))
-                has_location = bool(f.get("file") or f.get("path") or f.get("file_path") or f.get("matched-at"))
-                if not ((has_title and has_evidence) or (has_location and has_evidence)):
-                    continue
-                # Deduplicate by raw evidence hash
-                ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
-                ev_key = hashlib.md5(ev[:200].encode()).hexdigest()[:12] if ev else str(id(f))
-                if ev_key in seen_findings:
-                    continue
-                seen_findings.add(ev_key)
-                t = (f.get("name") or f.get("type") or f.get("check_name") or f.get("DetectorName") or "Security Finding")
-                imp = (f.get("note") or f.get("detail") or f.get("Raw") or "Security issue detected by scanner.")[:200]
-                ev = f.get("evidence") or f.get("Raw") or f.get("note") or f.get("detail") or ""
-                loc = ""
-                if f.get("file"):
-                    line = f.get("line", "")
-                    loc = f"{f['file']}:{line}" if line else f['file']
-                elif f.get("matched-at"):
-                    loc = f["matched-at"]
-                detail_parts = []
-                if loc:
-                    detail_parts.append(f"Location: {loc}")
-                if f.get("note"):
-                    detail_parts.append(f"{f['note']}")
-                if f.get("detail"):
-                    detail_parts.append(f"{f['detail']}")
-                if ev:
-                    detail_parts.append(f"Evidence: {ev[:300]}")
-                detail = "\n".join(detail_parts) if detail_parts else "No details available."
-                fallback_findings.append({
-                    "severity": "Low",
-                    "title": t,
-                    "impact": imp,
-                    "fix": "Review the detected location and apply the standard fix for this vulnerability class.",
-                    "detail": detail,
-                    "aiPrompt": (
-                        f"I need help fixing a Low-severity security issue in my application.\n\n"
-                        f"**Issue:** {t}\n\n"
-                        f"**Evidence found:** {ev[:200]}\n\n"
-                        f"**Location:** {loc}\n\n"
-                        f"Please provide:\n"
-                        f"1. An explanation of the vulnerability and its impact\n"
-                        f"2. Step-by-step instructions to fix it\n"
-                        f"3. Code examples showing the fix\n"
-                        f"4. Any additional security best practices to prevent similar issues"
-                    ),
-                    "template_id": f.get("type") or f.get("category") or "",
-                })
-            processed = {
-                "score": 100 - min(total_findings * 5, 100),
-                "duration_sec": duration,
-                "summary": f"Scan complete. {total_findings} issue(s) found.",
-                "severityCounts": {"Critical": 0, "High": 0, "Medium": 0, "Low": total_findings},
-                "findings": fallback_findings,
-                "templatesExecuted": total_tools_run,
-                "templatesFailed": total_tools_failed,
-                "totalFindings": total_findings,
-            }
-
-        # Save processed report
-        (PERSIST_DIR / f"{scan_id}_report.json").write_text(json.dumps({
-            "token": token,
-            "report": processed,
-        }, indent=2))
-
-        with state_lock:
-            scan_state[scan_id] = {"status": "completed", "progress": 100, "token": token}
-
-    except Exception as e:
-        with state_lock:
-            scan_state[scan_id] = {"status": "failed", "error": str(e)}
-    finally:
-        scan_semaphore.release()
+    return {"scan_id": scan_id, "status": "completed", "report": processed}
 
 
 # ---------------------------------------------------------------------------
@@ -459,7 +417,7 @@ def scan():
             }), 400
 
     try:
-        vuln_ids_list = parse_vuln_ids(
+        vuln_ids = parse_vuln_ids(
             request.form.get("vulnerabilities") if is_zip else data.get("vulnerabilities")
         )
     except ValueError as e:
@@ -473,7 +431,6 @@ def scan():
         }), 503
 
     scan_id = uuid.uuid4().hex[:12]
-    token = uuid.uuid4().hex[:16]
     workdir = TMP_ROOT / scan_id
     workdir.mkdir(parents=True, exist_ok=True)
 
@@ -486,11 +443,9 @@ def scan():
             os.remove(str(workdir / "upload.zip"))
         elif is_repo:
             workdir.rmdir()
-            # Support private repos: if GITHUB_TOKEN is set, inject it into the URL
             clone_url = repo_url
             github_token = os.environ.get("GITHUB_TOKEN", "")
             if github_token and "github.com" in repo_url:
-                # Convert https://github.com/user/repo -> https://token@github.com/user/repo
                 clone_url = repo_url.replace("https://github.com/", f"https://{github_token}@github.com/")
             result = subprocess.run(
                 ["git", "clone", "--depth", "1", clone_url, str(workdir)],
@@ -522,119 +477,15 @@ def scan():
         scan_semaphore.release()
         return jsonify({"error": str(e)}), 400
 
-    with state_lock:
-        scan_state[scan_id] = {"status": "queued", "token": token}
-
-    # Persist token to disk IMMEDIATELY so it survives container restarts
-    (PERSIST_DIR / f"{scan_id}.json").write_text(json.dumps({
-        "token": token, "status": "queued"
-    }))
-
-    # ... background thread runs and overwrites with full results when done
-
-    thread = threading.Thread(
-        target=run_scan_background,
-        args=(scan_id, token, workdir, vuln_ids_list),
-        daemon=True,
-    )
-    thread.start()
-
-    return jsonify({
-        "scan_id": scan_id,
-        "token": token,
-        "status": "accepted",
-        "vulnerabilities": vuln_ids_list,
-        "check_status": f"/scan/{scan_id}",
-    }), 202
-
-
-@app.route("/scan/<scan_id>", methods=["GET"])
-def get_scan_status(scan_id):
-    token = request.headers.get("X-Scan-Token") or request.args.get("token")
-
-    with state_lock:
-        state = scan_state.get(scan_id)
-
-    if state is None:
-        # Check persistent storage first (survives container restart)
-        persist_file = PERSIST_DIR / f"{scan_id}.json"
-        if persist_file.exists():
-            saved = json.loads(persist_file.read_text())
-            if token and saved.get("token") != token:
-                return jsonify({"error": "invalid token"}), 403
-            # If still queued/running, return running status
-            if saved.get("status") in ("queued", "running"):
-                return jsonify({"status": "running", "progress": 0})
-            return jsonify({"status": "completed",
-                           "results": saved.get("results", saved)})
-        # Fallback to workdir
-        workdir = TMP_ROOT / scan_id
-        results_file = workdir / "results.json"
-        if results_file.exists():
-            saved = json.loads(results_file.read_text())
-            if token and saved.get("token") != token:
-                return jsonify({"error": "invalid token"}), 403
-            return jsonify({"status": "completed",
-                           "results": saved.get("results", saved)})
-        return jsonify({"error": "scan not found"}), 404
-
-    if token and state.get("token") != token:
-        return jsonify({"error": "invalid token"}), 403
-
-    if state["status"] == "completed":
-        # Return the AI-processed report if available
-        persist_report = PERSIST_DIR / f"{scan_id}_report.json"
-        if persist_report.exists():
-            saved = json.loads(persist_report.read_text())
-            if token and saved.get("token") != token:
-                return jsonify({"error": "invalid token"}), 403
-            shutil.rmtree(str(TMP_ROOT / scan_id), ignore_errors=True)
-            return jsonify({"status": "completed", "report": saved.get("report", {})})
-        # Fallback to raw results
-        workdir = TMP_ROOT / scan_id
-        results_file = workdir / "results.json"
-        if results_file.exists():
-            saved = json.loads(results_file.read_text())
-            if token and saved.get("token") != token:
-                return jsonify({"error": "invalid token"}), 403
-            shutil.rmtree(str(workdir), ignore_errors=True)
-            return jsonify({"status": "completed", "results": saved.get("results", saved)})
-
-    if state["status"] == "failed":
-        shutil.rmtree(str(TMP_ROOT / scan_id), ignore_errors=True)
-        return jsonify({"status": "failed", "error": state.get("error")})
-
-    return jsonify({"status": state["status"], "progress": state.get("progress", 0)})
-
-
-@app.route("/debug-gemini/<scan_id>", methods=["GET"])
-def debug_gemini(scan_id):
-    """Show the Gemini prompt and raw findings for a completed scan."""
-    token = request.headers.get("X-Scan-Token") or request.args.get("token")
-    # Check token
-    report_file = PERSIST_DIR / f"{scan_id}_report.json"
-    if not report_file.exists():
-        return jsonify({"error": "no report found — scan may not have completed yet"}), 404
-    saved = json.loads(report_file.read_text())
-    if token and saved.get("token") != token:
-        return jsonify({"error": "invalid token"}), 403
-    # Check for Gemini debug file
-    debug_file = PERSIST_DIR / f"{scan_id}_gemini_debug.json"
-    if debug_file.exists():
-        return jsonify(json.loads(debug_file.read_text()))
-    # No debug file — Gemini wasn't called (API_KEY missing)
-    raw_file = PERSIST_DIR / f"{scan_id}.json"
-    raw = {}
-    if raw_file.exists():
-        raw = json.loads(raw_file.read_text()).get("results", {})
-    return jsonify({
-        "gemini_called": False,
-        "reason": "GEMINI_API_KEY not set or empty",
-        "raw_findings_count": sum(
-            len(v.get("findings", [])) for v in raw.get("tool_results", {}).values()
-        ),
-        "raw_tool_results_keys": list(raw.get("tool_results", {}).keys()),
-    })
+    # Run scan synchronously — container stays alive until done
+    try:
+        result = run_scan(workdir, vuln_ids)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e), "status": "failed"}), 500
+    finally:
+        shutil.rmtree(str(workdir), ignore_errors=True)
+        scan_semaphore.release()
 
 
 @app.route("/health", methods=["GET"])
@@ -660,12 +511,9 @@ def health():
         except Exception as e:
             versions[tool_name] = "not found"
 
-    with state_lock:
-        running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
     return jsonify({
         "status": "ok",
         "versions": versions,
-        "concurrent_scans": running,
         "max_concurrent": MAX_CONCURRENT,
         "github_auth": bool(os.environ.get("GITHUB_TOKEN")),
         "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -673,29 +521,23 @@ def health():
 
 
 @app.route("/process-report", methods=["POST"])
-def process_report():
+def process_report_route():
     """Process raw scan results through AI analysis."""
     try:
         data = request.get_json(silent=True) or {}
         scan_type = data.get("scan_type", "code")
         scan_data = data.get("scan_data", {})
-
-        # Auto-unwrap if data was sent as the full scan response
         if not scan_data and data.get("results"):
             scan_data = data["results"]
-            if not scan_type or scan_type == "code":
-                scan_type = "code"
         if not scan_data and data.get("findings") is not None:
             scan_data = data
-
         if not scan_data:
-            return jsonify({"error": "scan_data is required. Send either raw scan results or a full scan response (with 'results' key)."}), 400
+            return jsonify({"error": "scan_data is required."}), 400
 
         import importlib.util
         spec = importlib.util.spec_from_file_location("ai_processor", "/app/ai_processor.py")
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-
         report = mod.process_report(scan_data, scan_type)
         return jsonify(report)
     except Exception as e:

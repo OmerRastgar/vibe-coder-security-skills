@@ -1,12 +1,13 @@
-"""Nuclei Scan Server — async REST API for running Nuclei vulnerability scans.
+"""Nuclei Scan Server — synchronous REST API for running Nuclei vulnerability scans.
 
-POST /scan           → 202 {scan_id, status: "accepted"}  (runs nuclei in background)
-GET  /scan/{id}      → 200 {status: "running|completed|failed", data: ...}
-GET  /scans          → list all past scans
-GET  /templates      → list available vulnerability categories
+POST /scan           → 200 {scan_id, url, report}
 GET  /health         → health check
-GET  /log/{id}       → raw nuclei output
-GET  /report/{id}    → raw JSONL results
+POST /process-report → reprocess raw scan data with AI
+GET  /scans          → list past scan IDs (no URLs exposed)
+
+Security:
+  - No state persists between requests — container can scale to zero.
+  - Rate limiter prevents abuse.
 """
 
 import json
@@ -34,16 +35,14 @@ RESULTS_DIR.mkdir(parents=True, exist_ok=True)
 SCANS_DIR = Path("/tmp/scans")
 SCANS_DIR.mkdir(parents=True, exist_ok=True)
 
-# --- In-memory scan state ---
 MAX_CONCURRENT = 5
 scan_semaphore = threading.BoundedSemaphore(MAX_CONCURRENT)
-scan_state = {}
-state_lock = threading.Lock()
 
-# --- Rate limiter (simple token bucket) ---
-rate_window = {}   # ip -> [timestamps]
+# --- Rate limiter ---
+rate_window = {}
+rate_lock = threading.Lock()
 RATE_WINDOW_SEC = 60
-RATE_MAX_REQUESTS = 10  # max scan submissions per IP per minute
+RATE_MAX_REQUESTS = 10
 
 VULN_MAP = {
     "v1":  ("V1.txt",  "AI Commit Trap"),
@@ -60,26 +59,18 @@ VULN_MAP = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Rate limiter
-# ---------------------------------------------------------------------------
-
 def check_rate_limit():
     ip = request.remote_addr or "unknown"
     now = time.time()
-    with state_lock:
+    with rate_lock:
         bucket = rate_window.get(ip, [])
         bucket = [t for t in bucket if now - t < RATE_WINDOW_SEC]
         if len(bucket) >= RATE_MAX_REQUESTS:
-            return False, f"Rate limit exceeded ({RATE_MAX_REQUESTS} scans per {RATE_WINDOW_SEC}s)"
+            return False
         bucket.append(now)
         rate_window[ip] = bucket
-    return True, None
+    return True
 
-
-# ---------------------------------------------------------------------------
-# Validation & helpers
-# ---------------------------------------------------------------------------
 
 def validate_vulns(ids):
     if ids is None or len(ids) == 0:
@@ -90,7 +81,7 @@ def validate_vulns(ids):
     return ids
 
 
-def collect_templates_per_vuln(vuln_ids):
+def collect_templates(vuln_ids):
     per_vuln = {}
     all_paths = []
     for vid in vuln_ids:
@@ -103,7 +94,7 @@ def collect_templates_per_vuln(vuln_ids):
     return per_vuln, all_paths
 
 
-def build_scan_workdir(template_paths):
+def build_workdir(template_paths):
     workdir = SCANS_DIR / uuid.uuid4().hex[:12]
     workdir.mkdir(parents=True, exist_ok=True)
     count = 0
@@ -117,315 +108,7 @@ def build_scan_workdir(template_paths):
     return workdir, count
 
 
-# ---------------------------------------------------------------------------
-# Background scan runner
-# ---------------------------------------------------------------------------
-
-def run_scan_background(scan_id, url, vuln_ids, per_vuln, all_paths, concurrency, timeout_per):
-    try:
-        with state_lock:
-            scan_state[scan_id] = {"status": "copying", "progress": 0}
-
-        scan_workdir, templates_copied = build_scan_workdir(all_paths)
-        output_file = RESULTS_DIR / f"{scan_id}.jsonl"
-
-        with state_lock:
-            scan_state[scan_id] = {"status": "running", "progress": 0}
-
-        cmd = [
-            "nuclei",
-            "-u", url,
-            "-templates", str(scan_workdir),
-            "-jsonl",
-            "-output", str(output_file),
-            "-no-mhe",
-            "-concurrency", str(concurrency),
-            "-timeout", str(timeout_per),
-            "-max-host-error", "5",
-            "-retries", "1",
-            "-stats",
-            "-stats-interval", "10",
-            "-disable-update-check",
-            "-v",
-        ]
-
-        log_file = RESULTS_DIR / f"{scan_id}_log.txt"
-        start = time.time()
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        duration = round(time.time() - start, 2)
-
-        log_text = (result.stdout or "") + "\n" + (result.stderr or "")
-        log_file.write_text(log_text)
-
-        # Parse findings
-        findings = []
-        if output_file.exists():
-            for line in output_file.read_text().strip().splitlines():
-                if line.strip():
-                    try:
-                        findings.append(json.loads(line))
-                    except json.JSONDecodeError:
-                        findings.append({"raw": line})
-
-        final_stats, stats_errors, template_errors = parse_nuclei_output(log_text, vuln_ids)
-
-        vuln_breakdown = {}
-        for vid in vuln_ids:
-            requested = len(per_vuln.get(vid, []))
-            vuln_breakdown[vid] = {
-                "name": VULN_MAP[vid][1],
-                "templates_requested": requested,
-            }
-
-        findings_by_vuln = defaultdict(list)
-        for f in findings:
-            tid = f.get("template-id") or ""
-            vid = classify_finding_from_template_id(tid, vuln_ids)
-            if vid:
-                findings_by_vuln[vid].append(f)
-
-        for vid in vuln_breakdown:
-            f_list = findings_by_vuln.get(vid, [])
-            vuln_breakdown[vid]["findings_count"] = len(f_list)
-            vuln_breakdown[vid]["severity_counts"] = count_severities(f_list)
-            te = template_errors.get(vid, {})
-            vuln_breakdown[vid]["templates_failed"] = len(te.get("failed", []))
-            vuln_breakdown[vid]["failed_template_ids"] = te.get("failed", [])
-
-        unmapped = len([f for f in findings
-            if not classify_finding_from_template_id(f.get("template-id") or "", vuln_ids)])
-
-        # Tag findings with their vulnerability context
-        for f in findings:
-            vid = classify_finding_from_template_id(f.get("template-id", "") or "")
-            if vid:
-                f["vulnerability_id"] = vid
-                f["vulnerability_name"] = VULN_MAP.get(vid, [None])[1] if vid in VULN_MAP else ""
-
-        shutil.rmtree(scan_workdir, ignore_errors=True)
-
-        response_data = {
-            "scan_id": scan_id,
-            "url": url,
-            "vulnerabilities_scanned": list(vuln_ids),
-            "breakdown": vuln_breakdown,
-            "findings": findings,
-            "findings_total": len(findings),
-            "unmapped_findings": unmapped,
-            "duration_sec": duration,
-            "scan_output": {
-                "summary": final_stats,
-                "errors": stats_errors,
-            },
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-        }
-
-        (RESULTS_DIR / f"{scan_id}_summary.json").write_text(json.dumps(response_data, indent=2))
-
-        # Auto-process the report with AI analysis
-        try:
-            from ai_processor import process_report as process
-            processed = process(response_data, "url")
-            (RESULTS_DIR / f"{scan_id}_report.json").write_text(json.dumps({
-                "token": "not_used",
-                "report": processed,
-            }, indent=2))
-        except Exception:
-            pass
-
-        with state_lock:
-            scan_state[scan_id] = {"status": "completed", "progress": 100}
-
-    except subprocess.TimeoutExpired:
-        with state_lock:
-            scan_state[scan_id] = {"status": "failed", "error": "Scan timed out after 300s"}
-    except Exception as e:
-        with state_lock:
-            scan_state[scan_id] = {"status": "failed", "error": str(e)}
-    finally:
-        scan_semaphore.release()
-
-
-# ---------------------------------------------------------------------------
-# Routes
-# ---------------------------------------------------------------------------
-
-@app.route("/scan", methods=["POST"])
-def scan():
-    allowed, rate_error = check_rate_limit()
-    if not allowed:
-        return jsonify({"error": rate_error}), 429
-
-    data = request.get_json(silent=True) or {}
-    url = (data.get("url") or "").strip()
-    if not url:
-        return jsonify({"error": "url is required"}), 400
-
-    try:
-        vuln_ids = validate_vulns(data.get("vulnerabilities"))
-        per_vuln, all_paths = collect_templates_per_vuln(vuln_ids)
-    except ValueError as e:
-        return jsonify({"error": str(e)}), 400
-    except FileNotFoundError as e:
-        return jsonify({"error": str(e)}), 500
-
-    if not all_paths:
-        return jsonify({"error": "No templates resolved"}), 400
-
-    # Check concurrency
-    acquired = scan_semaphore.acquire(blocking=False)
-    if not acquired:
-        return jsonify({
-            "error": f"Server busy. Max {MAX_CONCURRENT} concurrent scans. Try again shortly.",
-            "retry_after_sec": 30,
-        }), 503
-
-    scan_id = uuid.uuid4().hex[:12]
-    token = uuid.uuid4().hex[:16]
-    concurrency = int(data.get("concurrency") or 10)
-    timeout_per = int(data.get("timeout") or 15)
-
-    with state_lock:
-        scan_state[scan_id] = {"status": "queued", "progress": 0, "token": token}
-
-    thread = threading.Thread(
-        target=run_scan_background,
-        args=(scan_id, url, vuln_ids, per_vuln, all_paths, concurrency, timeout_per),
-        daemon=True,
-    )
-    thread.start()
-
-    return jsonify({
-        "scan_id": scan_id,
-        "token": token,
-        "status": "accepted",
-        "vulnerabilities": list(vuln_ids),
-        "check_status": f"/scan/{scan_id}",
-    }), 202
-
-
-@app.route("/scan/<scan_id>", methods=["GET"])
-def get_scan_status(scan_id):
-    token = request.headers.get("X-Scan-Token") or request.args.get("token")
-
-    with state_lock:
-        state = scan_state.get(scan_id)
-
-    if state is None:
-        summary_file = RESULTS_DIR / f"{scan_id}_summary.json"
-        if summary_file.exists():
-            return jsonify({"status": "completed", "results": json.loads(summary_file.read_text())})
-        return jsonify({"error": "scan not found"}), 404
-
-    if token and state.get("token") != token:
-        return jsonify({"error": "invalid token"}), 403
-
-    if state["status"] == "completed":
-        # Return the AI-processed report if available
-        report_file = RESULTS_DIR / f"{scan_id}_report.json"
-        if report_file.exists():
-            saved = json.loads(report_file.read_text())
-            return jsonify({"status": "completed", "report": saved.get("report", {})})
-        summary_file = RESULTS_DIR / f"{scan_id}_summary.json"
-        if summary_file.exists():
-            return jsonify({"status": "completed", "results": json.loads(summary_file.read_text())})
-        return jsonify({"status": "completed", "error": "summary file missing"})
-
-    if state["status"] == "failed":
-        return jsonify({"status": "failed", "error": state.get("error")})
-
-    return jsonify({"status": state["status"], "progress": state.get("progress", 0)})
-
-
-@app.route("/health", methods=["GET"])
-def health():
-    with state_lock:
-        running = sum(1 for s in scan_state.values() if s["status"] in ("running", "copying", "queued"))
-    return jsonify({
-        "status": "ok",
-        "nuclei_version": get_nuclei_version(),
-        "concurrent_scans": running,
-        "max_concurrent": MAX_CONCURRENT,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-    })
-
-
-@app.route("/log/<scan_id>", methods=["GET"])
-def get_log(scan_id):
-    token = request.headers.get("X-Scan-Token") or request.args.get("token")
-    with state_lock:
-        state = scan_state.get(scan_id, {})
-    if token and state.get("token") != token:
-        return jsonify({"error": "invalid token"}), 403
-
-    log_file = RESULTS_DIR / f"{scan_id}_log.txt"
-    if not log_file.exists():
-        return jsonify({"error": "log not found"}), 404
-    raw = log_file.read_text()
-    clean = re.sub(r'\x1b\[[0-9;]*m', '', raw)
-    return jsonify({
-        "scan_id": scan_id,
-        "size_bytes": len(raw),
-        "lines": len(raw.splitlines()),
-        "log": clean,
-    })
-
-
-@app.route("/report/<scan_id>", methods=["GET"])
-def get_report(scan_id):
-    token = request.headers.get("X-Scan-Token") or request.args.get("token")
-    with state_lock:
-        state = scan_state.get(scan_id, {})
-    if token and state.get("token") != token:
-        return jsonify({"error": "invalid token"}), 403
-
-    jsonl_file = RESULTS_DIR / f"{scan_id}.jsonl"
-    if not jsonl_file.exists():
-        return jsonify({"error": "report not found"}), 404
-    return jsonify({
-        "scan_id": scan_id,
-        "results": [json.loads(line) for line in jsonl_file.read_text().strip().splitlines() if line.strip()],
-    })
-
-
-@app.route("/scans", methods=["GET"])
-def list_scans():
-    """Return only scan IDs — no URLs or results exposed without token."""
-    ids = []
-    for f in sorted(RESULTS_DIR.glob("*_summary.json"), reverse=True):
-        sid = f.stem.replace("_summary", "")
-        ids.append(sid)
-    return jsonify({"scan_count": len(ids), "scan_ids": ids})
-
-
-@app.route("/process-report", methods=["POST"])
-def process_report():
-    """Process raw scan results through AI analysis. Auto-unwraps full scan responses."""
-    try:
-        data = request.get_json(silent=True) or {}
-        scan_type = data.get("scan_type", "url")
-        scan_data = data.get("scan_data", {})
-
-        if not scan_data and data.get("results"):
-            scan_data = data["results"]
-        if not scan_data and data.get("findings") is not None:
-            scan_data = data
-
-        if not scan_data:
-            return jsonify({"error": "scan_data is required. Send raw scan results or a full scan response."}), 400
-
-        from ai_processor import process_report as process
-        report = process(scan_data, scan_type)
-        return jsonify(report)
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-# ---------------------------------------------------------------------------
-# Helpers (classify, parse, version)
-# ---------------------------------------------------------------------------
-
-def classify_finding_from_template_id(template_id, scanned_vulns=None):
+def classify_finding(template_id, scanned_vulns=None):
     if not template_id:
         return None
     vulns_to_check = scanned_vulns or list(VULN_MAP.keys())
@@ -492,7 +175,7 @@ def parse_nuclei_output(full_log, scanned_vulns=None):
         m = template_error_pattern.search(clean)
         if m:
             tid = m.group(1)
-            vid = classify_finding_from_template_id(tid, scanned_vulns)
+            vid = classify_finding(tid, scanned_vulns)
             if vid:
                 template_errors_by_vuln.setdefault(vid, set()).add(tid)
 
@@ -513,5 +196,193 @@ def get_nuclei_version():
         return "unknown"
 
 
+# ---------------------------------------------------------------------------
+# Synchronous scan
+# ---------------------------------------------------------------------------
+
+def run_scan(url, vuln_ids, per_vuln, all_paths, concurrency, timeout_per):
+    """Run nuclei synchronously, process with AI, return the full report."""
+    scan_id = uuid.uuid4().hex[:12]
+    scan_workdir, templates_copied = build_workdir(all_paths)
+    output_file = RESULTS_DIR / f"{scan_id}.jsonl"
+    log_file = RESULTS_DIR / f"{scan_id}_log.txt"
+
+    cmd = [
+        "nuclei", "-u", url,
+        "-templates", str(scan_workdir),
+        "-jsonl", "-output", str(output_file),
+        "-no-mhe",
+        "-concurrency", str(concurrency),
+        "-timeout", str(timeout_per),
+        "-max-host-error", "5",
+        "-retries", "1",
+        "-stats", "-stats-interval", "10",
+        "-disable-update-check", "-v",
+    ]
+
+    start = time.time()
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    duration = round(time.time() - start, 2)
+
+    log_text = (result.stdout or "") + "\n" + (result.stderr or "")
+    log_file.write_text(log_text)
+
+    # Parse findings
+    findings = []
+    if output_file.exists():
+        for line in output_file.read_text().strip().splitlines():
+            if line.strip():
+                try:
+                    findings.append(json.loads(line))
+                except json.JSONDecodeError:
+                    findings.append({"raw": line})
+
+    final_stats, stats_errors, template_errors = parse_nuclei_output(log_text, vuln_ids)
+
+    # Build breakdown
+    vuln_breakdown = {}
+    for vid in vuln_ids:
+        vuln_breakdown[vid] = {
+            "name": VULN_MAP[vid][1],
+            "templates_requested": len(per_vuln.get(vid, [])),
+        }
+
+    findings_by_vuln = defaultdict(list)
+    for f in findings:
+        tid = f.get("template-id") or ""
+        vid = classify_finding(tid, vuln_ids)
+        if vid:
+            findings_by_vuln[vid].append(f)
+
+    for vid in vuln_breakdown:
+        f_list = findings_by_vuln.get(vid, [])
+        vuln_breakdown[vid]["findings_count"] = len(f_list)
+        vuln_breakdown[vid]["severity_counts"] = count_severities(f_list)
+        te = template_errors.get(vid, {})
+        vuln_breakdown[vid]["templates_failed"] = len(te.get("failed", []))
+        vuln_breakdown[vid]["failed_template_ids"] = te.get("failed", [])
+
+    unmapped = len([f for f in findings if not classify_finding(f.get("template-id", ""), vuln_ids)])
+
+    # Tag findings with vulnerability context
+    for f in findings:
+        vid = classify_finding(f.get("template-id", ""), vuln_ids)
+        if vid:
+            f["vulnerability_id"] = vid
+            f["vulnerability_name"] = VULN_MAP.get(vid, (None, ""))[1]
+
+    response_data = {
+        "scan_id": scan_id,
+        "url": url,
+        "vulnerabilities_scanned": list(vuln_ids),
+        "breakdown": vuln_breakdown,
+        "findings": findings,
+        "findings_total": len(findings),
+        "unmapped_findings": unmapped,
+        "duration_sec": duration,
+        "scan_output": {"summary": final_stats, "errors": stats_errors},
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    }
+
+    # Process with AI
+    processed = None
+    try:
+        from ai_processor import process_report as process
+        processed = process(response_data, "url")
+    except Exception as e:
+        app.logger.error(f"AI processing failed: {e}")
+
+    shutil.rmtree(scan_workdir, ignore_errors=True)
+
+    return {
+        "scan_id": scan_id,
+        "url": url,
+        "status": "completed",
+        "report": processed or {"score": 0, "summary": "Scan complete.", "findings": [], "totalFindings": len(findings)},
+    }
+
+
+# ---------------------------------------------------------------------------
+# Routes
+# ---------------------------------------------------------------------------
+
+@app.route("/scan", methods=["POST"])
+def scan():
+    if not check_rate_limit():
+        return jsonify({"error": f"Rate limit exceeded ({RATE_MAX_REQUESTS} scans per {RATE_WINDOW_SEC}s)"}), 429
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get("url") or "").strip()
+    if not url:
+        return jsonify({"error": "url is required"}), 400
+
+    try:
+        vuln_ids = validate_vulns(data.get("vulnerabilities"))
+        per_vuln, all_paths = collect_templates(vuln_ids)
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except FileNotFoundError as e:
+        return jsonify({"error": str(e)}), 500
+
+    if not all_paths:
+        return jsonify({"error": "No templates resolved"}), 400
+
+    acquired = scan_semaphore.acquire(blocking=False)
+    if not acquired:
+        return jsonify({
+            "error": f"Server busy. Max {MAX_CONCURRENT} concurrent scans.",
+            "retry_after_sec": 30,
+        }), 503
+
+    concurrency = int(data.get("concurrency") or 10)
+    timeout_per = int(data.get("timeout") or 15)
+
+    try:
+        result = run_scan(url, vuln_ids, per_vuln, all_paths, concurrency, timeout_per)
+        return jsonify(result), 200
+    except Exception as e:
+        return jsonify({"error": str(e), "status": "failed"}), 500
+    finally:
+        scan_semaphore.release()
+
+
+@app.route("/health", methods=["GET"])
+def health():
+    return jsonify({
+        "status": "ok",
+        "nuclei_version": get_nuclei_version(),
+        "max_concurrent": MAX_CONCURRENT,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+    })
+
+
+@app.route("/scans", methods=["GET"])
+def list_scans():
+    ids = []
+    for f in sorted(RESULTS_DIR.glob("*_summary.json"), reverse=True):
+        ids.append(f.stem.replace("_summary", ""))
+    return jsonify({"scan_count": len(ids), "scan_ids": ids})
+
+
+@app.route("/process-report", methods=["POST"])
+def process_report_route():
+    try:
+        data = request.get_json(silent=True) or {}
+        scan_type = data.get("scan_type", "url")
+        scan_data = data.get("scan_data", {})
+        if not scan_data and data.get("results"):
+            scan_data = data["results"]
+        if not scan_data and data.get("findings") is not None:
+            scan_data = data
+        if not scan_data:
+            return jsonify({"error": "scan_data is required."}), 400
+
+        from ai_processor import process_report as process
+        report = process(scan_data, scan_type)
+        return jsonify(report)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)))
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
