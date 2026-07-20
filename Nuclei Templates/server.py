@@ -371,9 +371,12 @@ def scan():
 
 @app.route("/health", methods=["GET"])
 def health():
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    ai_status = "configured" if gemini_key else "not configured"
     return jsonify({
         "status": "ok",
         "nuclei_version": get_nuclei_version(),
+        "ai_status": ai_status,
         "max_concurrent": MAX_CONCURRENT,
         "timestamp": datetime.now(timezone.utc).isoformat(),
     })

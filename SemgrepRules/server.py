@@ -511,9 +511,12 @@ def health():
         except Exception as e:
             versions[tool_name] = "not found"
 
+    gemini_key = os.environ.get("GEMINI_API_KEY", "")
+    ai_status = "configured" if gemini_key else "not configured"
     return jsonify({
         "status": "ok",
         "versions": versions,
+        "ai_status": ai_status,
         "max_concurrent": MAX_CONCURRENT,
         "github_auth": bool(os.environ.get("GITHUB_TOKEN")),
         "timestamp": datetime.now(timezone.utc).isoformat(),
