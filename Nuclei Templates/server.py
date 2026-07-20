@@ -337,18 +337,6 @@ def get_scan_status(scan_id):
     return jsonify({"status": state["status"], "progress": state.get("progress", 0)})
 
 
-@app.route("/templates", methods=["GET"])
-def list_templates():
-    result = {}
-    for vid, (filename, name) in VULN_MAP.items():
-        tf = TEMPLATES_DIR / filename
-        count = 0
-        if tf.exists():
-            count = len([l for l in tf.read_text().strip().splitlines() if l.strip()])
-        result[vid] = {"name": name, "file": filename, "template_count": count}
-    return jsonify(result)
-
-
 @app.route("/health", methods=["GET"])
 def health():
     with state_lock:

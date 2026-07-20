@@ -2,15 +2,20 @@ FROM python:3.12-slim
 
 ARG TRUFFLEHOG_VERSION=3.88.16
 
-RUN apt-get update && apt-get install -y --no-install-recommends git curl && \
+# Install system dependencies
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends git curl && \
     rm -rf /var/lib/apt/lists/*
 
-RUN echo "Installing semgrep..." && pip install --no-cache-dir semgrep
+# Install all Python packages in one layer (reduces image size significantly)
+RUN pip install --no-cache-dir \
+    semgrep \
+    checkov \
+    flask \
+    gunicorn
 
-RUN echo "Installing checkov..." && pip install --no-cache-dir checkov
-
-RUN echo "Installing TruffleHog ${TRUFFLEHOG_VERSION}..." && \
-    ARCH=$(uname -m) && \
+# Install TruffleHog binary
+RUN ARCH=$(uname -m) && \
     case "$ARCH" in \
       x86_64)  TH_ARCH="amd64" ;; \
       aarch64) TH_ARCH="arm64" ;; \
@@ -21,16 +26,16 @@ RUN echo "Installing TruffleHog ${TRUFFLEHOG_VERSION}..." && \
     chmod +x /usr/local/bin/trufflehog
 
 ENV PATH="/root/.local/bin:${PATH}"
+ENV PYTHONUNBUFFERED=1
 
+# Pre-create app directory
 RUN mkdir -p /app
 
+# Copy application files (these change more often, so they're last for better caching)
 COPY ["rules/", "/app/rules/"]
 COPY ["scanners/", "/app/scanners/"]
 COPY ["server.py", "/app/server.py"]
 COPY ["ai_processor.py", "/app/ai_processor.py"]
-COPY ["requirements.txt", "/app/requirements.txt"]
-
-RUN pip install --no-cache-dir -r /app/requirements.txt
 
 EXPOSE 8080
 WORKDIR /app

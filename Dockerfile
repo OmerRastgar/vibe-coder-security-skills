@@ -2,9 +2,8 @@ FROM alpine:3.20
 
 ARG NUCLEI_VERSION=3.3.9
 
-RUN apk add --no-cache python3 py3-pip curl unzip
-
-RUN echo "Installing nuclei ${NUCLEI_VERSION}..." && \
+# Install system dependencies + nuclei binary in one layer
+RUN apk add --no-cache python3 py3-pip curl unzip && \
     ARCH=$(uname -m) && \
     case "$ARCH" in \
       x86_64)  NUCLEI_ARCH="amd64" ;; \
@@ -18,17 +17,15 @@ RUN echo "Installing nuclei ${NUCLEI_VERSION}..." && \
     chmod +x /usr/local/bin/nuclei && \
     rm -rf /tmp/nuclei.zip /tmp/nuclei
 
-RUN echo "Cloning nuclei-templates..." && \
-    curl -sSL https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.tar.gz | \
+# Clone nuclei-templates (largest layer — cached unless templates change)
+RUN curl -sSL https://github.com/projectdiscovery/nuclei-templates/archive/refs/heads/main.tar.gz | \
     tar xz -C /opt && \
     mv /opt/nuclei-templates-main /opt/nuclei-templates
 
+# Copy application files
 COPY ["Nuclei Templates/", "/opt/templates/"]
 COPY ["Nuclei Templates/server.py", "/app/server.py"]
 COPY ["Nuclei Templates/ai_processor.py", "/app/ai_processor.py"]
-COPY ["Nuclei Templates/requirements.txt", "/app/requirements.txt"]
-
-RUN pip3 install --break-system-packages --no-cache-dir -r /app/requirements.txt
 
 EXPOSE 8080
 WORKDIR /app

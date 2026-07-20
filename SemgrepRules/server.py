@@ -672,14 +672,6 @@ def health():
     })
 
 
-@app.route("/templates", methods=["GET"])
-def list_templates():
-    result = {}
-    for vid, name in VULN_MAP.items():
-        result[vid] = {"name": name, "tools": TOOL_PLAN.get(vid, [])}
-    return jsonify(result)
-
-
 @app.route("/process-report", methods=["POST"])
 def process_report():
     """Process raw scan results through AI analysis."""
