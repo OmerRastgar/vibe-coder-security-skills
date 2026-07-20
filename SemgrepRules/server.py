@@ -497,7 +497,7 @@ def health():
         ("checkov", ["pip", "show", "checkov"]),
     ]:
         try:
-            r = subprocess.run(check_cmd, capture_output=True, text=True, timeout=10)
+            r = subprocess.run(check_cmd, capture_output=True, text=True, timeout=60)
             out = (r.stdout + r.stderr).strip()
             if tool_name == "checkov" and "Version:" in out:
                 for line in out.splitlines():
