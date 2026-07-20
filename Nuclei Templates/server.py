@@ -294,11 +294,34 @@ def run_scan(url, vuln_ids, per_vuln, all_paths, concurrency, timeout_per):
 
     shutil.rmtree(scan_workdir, ignore_errors=True)
 
+    if not processed or processed.get("score") is None:
+        sev_counts = {"Critical": 0, "High": 0, "Medium": 0, "Low": 0}
+        for f in findings:
+            sev = (f.get("info", {}).get("severity") or f.get("severity") or "unknown").lower()
+            if sev in ("critical", "crit"):
+                sev_counts["Critical"] += 1
+            elif sev in ("high", "error"):
+                sev_counts["High"] += 1
+            elif sev in ("medium", "med", "warning"):
+                sev_counts["Medium"] += 1
+            else:
+                sev_counts["Low"] += 1
+        processed = {
+            "score": 100 - (sev_counts["Critical"] * 20) - (sev_counts["High"] * 10) - (sev_counts["Medium"] * 5) - (sev_counts["Low"] * 1),
+            "duration_sec": duration,
+            "summary": f"Scan complete. {len(findings)} finding(s) found.",
+            "severityCounts": sev_counts,
+            "findings": [],
+            "templatesExecuted": final_stats.get("templates_executed", 0),
+            "templatesFailed": len(template_errors),
+            "totalFindings": len(findings),
+        }
+
     return {
         "scan_id": scan_id,
         "url": url,
         "status": "completed",
-        "report": processed or {"score": 0, "summary": "Scan complete.", "findings": [], "totalFindings": len(findings)},
+        "report": processed,
     }
 
 
