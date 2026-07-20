@@ -1,5 +1,4 @@
-"""
-AI Report Processor — Gemini integration for scan result analysis.
+"""AI Report Processor — Gemini integration for scan result analysis.
 
 POST /process-report
     Body: {"scan_type": "url|code", "scan_data": {...raw scan results...}}
@@ -15,6 +14,7 @@ import re
 from datetime import datetime, timezone
 from urllib import request as urlrequest
 from urllib.error import URLError, HTTPError
+from pathlib import Path
 
 API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
@@ -41,10 +41,10 @@ def process_report(raw_results, scan_type="url", debug_path=None):
     findings_raw, templates_exec, templates_failed = extract_findings(raw_results, scan_type)
     duration = raw_results.get("duration_sec", 0)
 
-    # Filter out empty/phantom findings (e.g. TruffleHog results with no detector or raw data)
+    # Filter out empty/phantom findings
     findings_raw = [f for f in findings_raw if _has_meaningful_data(f)]
 
-    # Deduplicate by title+location — same vulnerability at the same location appears once
+    # Deduplicate by title+location
     seen_keys = set()
     deduped = []
     for f in findings_raw:
@@ -75,7 +75,6 @@ def process_report(raw_results, scan_type="url", debug_path=None):
             "_raw": {k: str(v)[:500] for k, v in f.items() if k not in ("_raw",)},
         })
 
-    # Fallback — ensure all 4 keys exist
     severity_counts = {"Critical": severity_counts.get("Critical", 0),
                        "High": severity_counts.get("High", 0),
                        "Medium": severity_counts.get("Medium", 0),
@@ -129,6 +128,8 @@ def process_report(raw_results, scan_type="url", debug_path=None):
                 "template_id": nf.get("template_id", ""),
             })
 
+    score = calculate_score(severity_counts)
+
     return {
         "score": score,
         "duration_sec": duration,
@@ -147,7 +148,6 @@ def _has_meaningful_data(f):
     """Filter out empty/phantom findings with no detector, no evidence, and no location."""
     if not isinstance(f, dict):
         return False
-    # At least one of these must have real content
     has_title = bool(f.get("DetectorName") or f.get("name") or f.get("type") or f.get("check_id") or f.get("check_name"))
     has_evidence = bool(f.get("Raw") or f.get("evidence") or f.get("note") or f.get("detail") or f.get("description"))
     has_location = bool(f.get("file") or f.get("path") or f.get("file_path") or f.get("matched-at"))
@@ -159,22 +159,20 @@ def _has_meaningful_data(f):
 # ---------------------------------------------------------------------------
 
 def extract_findings(raw, scan_type):
-    """Pull findings, templates_executed, templates_failed from raw scan data."""
     findings = []
     templates = 0
     failed = 0
 
-    # SAST format — check first since SAST has empty findings[] but real results in tool_results
+    # SAST format — check first
     tr = raw.get("tool_results") or {}
     if tr:
         for tool, tres in tr.items():
             findings.extend(tres.get("findings", []))
-        # Count tools from the raw response if available
         templates = raw.get("templates_executed", 0)
         failed = raw.get("templates_failed", 0)
         return findings, templates, failed
 
-    # Nuclei format — findings directly under raw
+    # Nuclei format
     raw_findings = raw.get("findings", [])
     if raw_findings:
         findings = raw_findings
@@ -187,7 +185,7 @@ def extract_findings(raw, scan_type):
                 failed += 1
         return findings, templates, failed
 
-    # Fallback: breakdown-based (processed report)
+    # Fallback: breakdown-based
     bd = raw.get("breakdown", {})
     if bd:
         findings = raw.get("findings", [])
@@ -198,109 +196,75 @@ def extract_findings(raw, scan_type):
 
 
 def extract_title(finding):
-    # Nuclei format
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("name", "")
-    # v6 custom scanner — name + category
     if finding.get("name") and finding.get("category"):
         return f"[{finding['category']}] {finding['name']}"
-    # v2 scanner type field
     if finding.get("type") and finding.get("package"):
         return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
     if finding.get("type"):
         return finding["type"]
-    # Semgrep check_name
     if finding.get("check_name"):
         return finding["check_name"]
-    # Trufflehog detector name
     if finding.get("DetectorName"):
         return f"{finding.get('DetectorName', '')}: {finding.get('Raw', '')[:60]}"
-    # Fallback
-    if finding.get("name"):
-        return finding["name"]
-    if finding.get("title"):
-        return finding["title"]
-    return "Unknown finding"
+    return "Security Finding"
 
 
 def extract_template_id(finding):
-    tid = finding.get("template-id") or finding.get("check_id") or ""
-    if tid:
-        return tid
-    # v2 scanner
-    if finding.get("type"):
-        return f"{finding['type']}: {finding.get('package', finding.get('file', ''))}"
-    # v6 custom scanner
-    if finding.get("name") and finding.get("category"):
-        return f"{finding['category']}: {finding['name']}"
-    # Trufflehog detector
+    if isinstance(finding.get("info"), dict):
+        return finding.get("template-id") or finding.get("template_path") or ""
+    if finding.get("check_id"):
+        return finding["check_id"]
+    if finding.get("check_name"):
+        return finding["check_name"]
     if finding.get("DetectorName"):
         return finding["DetectorName"]
+    if finding.get("type"):
+        return finding["type"]
     return ""
 
 
 def extract_location(finding):
-    # Nuclei
     if finding.get("matched-at"):
         return finding["matched-at"]
-    # v6 scanner — file + line
+    if finding.get("file") and finding.get("line"):
+        return f"{finding['file']}:{finding['line']}"
     if finding.get("file"):
-        line = finding.get("line", "")
-        if line:
-            return f"{finding['file']}:{line}"
         return finding["file"]
-    # Checkov
-    if finding.get("file_path"):
-        line_range = finding.get("file_line_range", [])
-        if line_range:
-            return f"{finding['file_path']}:{line_range[0]}"
-        return finding["file_path"]
-    # Semgrep
     if finding.get("path"):
         s = finding.get("start", {})
         return f"{finding['path']}:{s.get('line', '?')}"
-    # v2 scanner — package context
     if finding.get("package") and finding.get("ecosystem"):
         return f"{finding.get('ecosystem', '')}:{finding.get('package', '')}"
-    # Evidence only
     if finding.get("evidence"):
         return finding["evidence"]
     return "unknown"
 
 
 def extract_description(finding):
-    # Nuclei
     if isinstance(finding.get("info"), dict):
         return finding["info"].get("description", "")
-    # v6 scanner
     if finding.get("note"):
         return finding["note"]
     if finding.get("detail"):
         return finding["detail"]
-    # Trufflehog
     if finding.get("Raw"):
         return finding["Raw"][:500]
-    # Checkov
     if finding.get("guideline"):
         return finding["guideline"]
-    # Semgrep message
     if isinstance(finding.get("extra"), dict) and finding["extra"].get("message"):
         return finding["extra"]["message"]
     return ""
 
 
 def extract_evidence(finding):
-    """Extract a snippet of evidence for the technical detail section."""
-    # v6 scanner evidence
     if finding.get("evidence"):
         return finding["evidence"]
-    # Nuclei request/response
     if finding.get("request"):
         return finding["request"][:500]
-    # Trufflehog raw
     if finding.get("Raw"):
         return finding["Raw"][:500]
-    # v2 scanner note/detail
     if finding.get("note"):
         return finding["note"]
     if finding.get("detail"):
@@ -325,8 +289,8 @@ def build_detail(finding):
     vname, vid = extract_vuln_context(finding)
     if vname:
         parts.append(f"Vulnerability Category: {vname} ({vid})")
-    if finding["request"]:
-        parts.append(f"Evidence Snippet:\n```\n{finding['request'][:500]}\n```")
+    if finding["evidence"]:
+        parts.append(f"Evidence Snippet:\n```\n{finding['evidence'][:500]}\n```")
     parts.append(f"Scanner Template: {finding['template_id']}")
     parts.append(f"Location: {finding['location']}")
     return "\n\n".join(parts)
@@ -344,7 +308,7 @@ def normalize_severity(raw):
         return "High"
     if s in ("medium", "med", "warning", "warn"):
         return "Medium"
-    return "Low"  # info/note/unknown all map to Low
+    return "Low"
 
 
 def calculate_score(counts):
@@ -390,7 +354,6 @@ def call_gemini(findings, scan_type):
     except OSError as e:
         return _gemini_error(f"Gemini request failed: {e}")
 
-    # Parse candidates
     text = ""
     for candidate in raw.get("candidates", []):
         for part in candidate.get("content", {}).get("parts", []):
@@ -403,7 +366,6 @@ def call_gemini(findings, scan_type):
 
 
 def _gemini_error(msg):
-    """Return a structured error with clear messaging — NOT silent fallback."""
     return msg, []
 
 
@@ -426,92 +388,73 @@ def build_gemini_prompt(findings, scan_type):
 
     return f"""You are a senior application security engineer. You are given raw scanner findings and must produce a clean, structured security report for a developer dashboard.
 
-Each finding below is the ACTUAL raw data from security scanners (Nuclei, Semgrep, TruffleHog, Checkov, or custom scanners). Your job is to interpret this raw data and generate human-readable, actionable information.
+Each finding below is the ACTUAL raw data from security scanners. Your job is to interpret this raw data and generate human-readable, actionable information.
 
-**Critically important:** The raw_scanner_output field contains the COMPLETE raw scanner finding — including file paths, line numbers, connection strings, API keys, URLs, HTTP response snippets, and package names. Use this data to write SPECIFIC titles, impacts, and fixes — not generic placeholders.
+**Critically important:** Use the raw_scanner_output to write SPECIFIC titles, impacts, and fixes — not generic placeholders.
 
 Example of what NOT to do:
-  ❌ title: "Unknown"
-  ❌ impact: "Detected by ."
-  ❌ fix: "Review the detected location."
+  title: "Unknown"
+  impact: "Detected by ."
+  fix: "Review the detected location."
 
 Example of what TO do:
-  ✅ title: "Hardcoded Postgres credentials in docker-compose.yml line 5"
-  ✅ impact: "The database password is committed in plain text. Anyone with access to the git repository can connect to the production database and steal or destroy user data."
-  ✅ fix: "Replace the hardcoded username and password with environment variables. Add POSTGRES_USER and POSTGRES_PASSWORD to a .env file, add .env to .gitignore, and reference them in docker-compose.yml using ${POSTGRES_USER}:${POSTGRES_PASSWORD}."
+  title: "Hardcoded Postgres credentials in docker-compose.yml line 5"
+  impact: "The database password is committed in plain text. Anyone with access to the git repository can connect to the production database and steal or destroy user data."
+  fix: "Replace the hardcoded username and password with environment variables."
 
-For aiPrompt, write a COMPLETE self-contained markdown prompt that a developer can copy-paste into any AI coding assistant to get a detailed fix. Include:
-- The vulnerability category and what it means
-- The exact file and line where the issue was found
-- The evidence snippet (mask sensitive parts with xxxx)
-- 3-5 numbered, specific remediation steps
-- A code example showing the correct implementation
-- Prevention tips
+You MUST return ONLY valid JSON (no markdown code fences). The JSON must be an array of objects, one per finding:
+[
+  {{
+    "severity": "Critical|High|Medium|Low",
+    "title": "string — specific, descriptive title",
+    "impact": "string — what this means for the application/user",
+    "fix": "string — specific remediation steps",
+    "aiPrompt": "string — a self-contained markdown prompt a developer can copy into any AI coding assistant to get a detailed fix. Include the vulnerability category, file path, evidence, and step-by-step fix instructions."
+  }}
+]
 
-RETURN ONLY VALID JSON — no markdown blocks, no explanatory text, just this object:
+Context: {ctx}
+Total findings: {len(findings)}
 
-{{
-  "score": <integer 0-100>,
-  "summary": "<2-3 sentence summary including count and severity breakdown>",
-  "findings": [
-    {{
-      "severity": "<Critical|High|Medium|Low>",
-      "title": "<specific human-readable title, max 100 chars>",
-      "impact": "<1-2 sentences on real-world attacker impact>",
-      "fix": "<1-2 specific actionable sentences>",
-      "aiPrompt": "<complete self-contained markdown prompt>"
-    }}
-  ]
-}}
-
-Score: Critical=-20, High=-10, Medium=-5, Low=-1. 100 = no issues.
-
-FINDINGS:
-{block}"""
+Findings:
+{block}
+"""
 
 
-def parse_gemini_response(text, original_findings):
-    def extract_json(t):
-        try:
-            return json.loads(t)
-        except json.JSONDecodeError:
-            m = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', t, re.DOTALL)
-            if m:
-                try:
-                    return json.loads(m.group(1))
-                except json.JSONDecodeError:
-                    pass
-        return None
+def parse_gemini_response(text, normalized):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("\n", 1)[1] if "\n" in text else text[3:]
+    if text.endswith("```"):
+        text = text[:-3]
+    text = text.strip()
 
-    data = extract_json(text)
-    if not data:
-        return build_fallback(original_findings)
-
-    summary = data.get("summary", "Scan complete.")
-    ai_findings = data.get("findings", [])
-
-    result = []
-    for i, orig in enumerate(original_findings):
-        if i < len(ai_findings):
-            result.append({
-                "title": ai_findings[i].get("title", orig["title"]),
-                "impact": ai_findings[i].get("impact", orig["description"][:200]),
-                "fix": ai_findings[i].get("fix", "Review and fix."),
-                "aiPrompt": ai_findings[i].get("aiPrompt", build_ai_prompt(orig)),
-            })
+    try:
+        arr = json.loads(text)
+    except json.JSONDecodeError:
+        match = re.search(r'\[.*\]', text, re.DOTALL)
+        if match:
+            try:
+                arr = json.loads(match.group(0))
+            except json.JSONDecodeError:
+                return build_fallback(normalized)
         else:
-            result.append({
-                "title": orig["title"],
-                "impact": orig["description"][:200],
-                "fix": "Review the finding and apply appropriate remediation.",
-                "aiPrompt": build_ai_prompt(orig),
-            })
+            return build_fallback(normalized)
 
-    return summary, result
+    if not isinstance(arr, list):
+        return build_fallback(normalized)
+
+    summary_parts = []
+    for a in arr:
+        if a.get("severity") and a.get("title"):
+            summary_parts.append(f"{a['severity']}: {a['title']}")
+    summary = "AI Analysis: " + "; ".join(summary_parts) if summary_parts else "AI analysis complete."
+
+    return summary, arr
 
 
 # ---------------------------------------------------------------------------
-# Fallback (no API key)
+# Fallback (no Gemini)
 # ---------------------------------------------------------------------------
 
 def build_fallback(findings):
@@ -528,10 +471,24 @@ def build_fallback(findings):
     for f in findings:
         desc = f["description"][:200] or ""
         vname, vid = extract_vuln_context(f)
-        impact_text = desc or (f"Detected by {f['template_id']}" if f["template_id"] else f"Security issue detected.")
-        fix_text = f"Remove the hardcoded secret from {f['location'] or 'the source file'} and use environment variables or a secrets manager." if vname else "Review the detected location and apply the standard fix for this vulnerability class."
+        title = f["title"]
+        loc = f["location"] or "unknown"
+        evidence = f["evidence"][:200] or ""
+
+        # Type-aware impact and fix text
+        if vid == "v2" or "unlisted" in title.lower() or "hallucinat" in title.lower() or "import" in title.lower():
+            pkg = evidence or title
+            impact_text = f"The package '{pkg}' is not published in the npm registry. It will fail on install and could be a supply chain attack vector if someone registers it later."
+            fix_text = f"Remove the import of '{pkg}' or replace it with an official, well-maintained package that provides the same functionality."
+        elif vid == "v6" or vname:
+            impact_text = desc or "Hardcoded credential or secret detected in source code. Anyone with repository access can extract and misuse it."
+            fix_text = f"Remove the secret from {loc} and use environment variables, a .env file (with .gitignore), or a secrets manager like Vault, AWS Secrets Manager, or Doppler."
+        else:
+            impact_text = desc or (f"Detected by {f['template_id']}" if f["template_id"] else "Security issue detected.")
+            fix_text = "Review the detected location and apply the standard fix for this vulnerability class."
+
         results.append({
-            "title": f["title"],
+            "title": title,
             "impact": impact_text,
             "fix": fix_text,
             "aiPrompt": build_ai_prompt(f),
@@ -540,7 +497,6 @@ def build_fallback(findings):
 
 
 def extract_vuln_context(finding):
-    """Pull vulnerability name and ID if tagged."""
     if finding.get("vulnerability_name"):
         return finding["vulnerability_name"], finding.get("vulnerability_id", "")
     return "", ""
@@ -573,45 +529,6 @@ def build_ai_prompt(finding):
         f"{vuln_context}"
         f"**Location:** {loc}\n"
         f"{evidence_block}"
-        f"**Description:** {desc}\n\n"
-        f"Please provide:\n"
-        f"1. An explanation of the vulnerability and its impact\n"
-        f"2. Step-by-step instructions to fix it\n"
-        f"3. Code examples showing the fix\n"
-        f"4. Any additional security best practices to prevent similar issues"
-    )
-    desc = finding["description"] or "No description available."
-    loc = finding["location"]
-    tid = finding["template_id"]
-    vname, vid = extract_vuln_context(finding)
-
-    vuln_line = ""
-    if vname:
-        vuln_line = f"**Vulnerability Category:** {vname} ({vid})\n\n"
-        if "Baking Secrets" in vname:
-            vuln_line += (
-                "This vulnerability falls under 'Baking Secrets into Source' — "
-                "credentials or secrets hardcoded in source code, config files, or environment stubs "
-                "that should be moved to environment variables or a secrets manager.\n\n"
-            )
-        elif "Package Hallucination" in vname:
-            vuln_line += (
-                "This vulnerability falls under 'Package Hallucination' — "
-                "a dependency that appears to be AI-generated or typosquatted, "
-                "which may not actually exist in the official registry.\n\n"
-            )
-        elif "Client-Side" in vname:
-            vuln_line += (
-                "This vulnerability falls under 'Client-Side Security Misplacements' — "
-                "security logic enforced only in the browser that must be moved to the server side.\n\n"
-            )
-
-    return (
-        f"I need help fixing a {sev}-severity security issue in my application.\n\n"
-        f"{vuln_line}"
-        f"**Issue:** {title}\n\n"
-        f"**Detected by:** {tid}\n\n"
-        f"**Location:** {loc}\n\n"
         f"**Description:** {desc}\n\n"
         f"Please provide:\n"
         f"1. An explanation of the vulnerability and its impact\n"
