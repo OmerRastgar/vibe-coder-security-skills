@@ -536,3 +536,4 @@ def build_ai_prompt(finding):
         f"3. Code examples showing the fix\n"
         f"4. Any additional security best practices to prevent similar issues"
     )
+#  

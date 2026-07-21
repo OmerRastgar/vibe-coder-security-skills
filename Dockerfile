@@ -27,6 +27,9 @@ COPY ["Nuclei Templates/", "/opt/templates/"]
 COPY ["Nuclei Templates/server.py", "/app/server.py"]
 COPY ["Nuclei Templates/ai_processor.py", "/app/ai_processor.py"]
 
+# Install Python dependencies
+RUN pip3 install --break-system-packages --no-cache-dir flask flask-cors
+
 EXPOSE 8080
 WORKDIR /app
 CMD ["sh", "-c", "exec python3 server.py"]

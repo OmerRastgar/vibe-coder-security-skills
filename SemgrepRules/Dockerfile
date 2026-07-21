@@ -12,6 +12,7 @@ RUN pip install --no-cache-dir \
     semgrep \
     checkov \
     flask \
+    flask-cors \
     gunicorn
 
 # Install TruffleHog binary
@@ -32,10 +33,10 @@ ENV PYTHONUNBUFFERED=1
 RUN mkdir -p /app
 
 # Copy application files (these change more often, so they're last for better caching)
-COPY ["rules/", "/app/rules/"]
-COPY ["scanners/", "/app/scanners/"]
-COPY ["server.py", "/app/server.py"]
-COPY ["ai_processor.py", "/app/ai_processor.py"]
+COPY ["SemgrepRules/rules/", "/app/rules/"]
+COPY ["SemgrepRules/scanners/", "/app/scanners/"]
+COPY ["SemgrepRules/server.py", "/app/server.py"]
+COPY ["SemgrepRules/ai_processor.py", "/app/ai_processor.py"]
 
 EXPOSE 8080
 WORKDIR /app
